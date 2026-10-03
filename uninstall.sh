@@ -14,6 +14,15 @@ else
     echo "Binary not found. Skipping."
 fi
 
+if [ -e /usr/local/bin/vrgb-gui ] || [ -d /usr/local/lib/vrgb-suite ]; then
+    echo "Removing VRGB Suite (GUI)..."
+    pkill -f 'vrgb_suite|vrgb-gui' 2>/dev/null || true
+    sudo rm -rf /usr/local/lib/vrgb-suite
+    sudo rm -f /usr/local/bin/vrgb-gui /usr/share/applications/vrgb-gui.desktop \
+        /usr/share/pixmaps/vrgb.png /usr/local/lib/systemd/user/vrgb-gui.service
+    rm -f ~/.config/autostart/vrgb-gui.desktop
+fi
+
 echo "[2/5] Removing udev rule..."
 
 if [ -f /etc/udev/rules.d/70-vrgb.rules ] || [ -f /etc/udev/rules.d/99-vrgb.rules ]; then

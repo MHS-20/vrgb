@@ -11,6 +11,14 @@
 VRGB is a lightweight Linux CLI utility for controlling RGB keyboards on
 Vivobook ASUS laptops that expose the HID LampArray interface.
 
+It comes in two parts:
+
+- **VRGB Core** — the `vrgb` command line tool. A single Python file, standard
+  library only, no daemon. It is also an importable module for other frontends.
+- **VRGB Suite** (optional) — a PyQt6 GUI and tray on top of Core, with desktop
+  integration and automation (idle auto-off, daytime-off). It lives in `suite/`
+  and never changes how Core works.
+
 
 **Why this exists:**
 
@@ -155,12 +163,14 @@ https://github.com/vrgb-dev/vrgb/issues/1
 
 ## Quick Install
 
-Clone the repository and run the installer.
+Clone the repository and run the installer. It asks whether to install
+**Core** (CLI only) or **Suite** (Core + GUI/tray, needs PyQt6); pass `core` or
+`suite` to skip the question.
 
     git clone https://github.com/vrgb-dev/vrgb.git
     cd vrgb
     chmod +x install.sh
-    ./install.sh
+    ./install.sh            # or: ./install.sh core | ./install.sh suite
 
 The udev rule gives the logged-in user access to the keyboard right away
 (`uaccess`); membership in the `vrgb` group applies after the next login.
@@ -168,15 +178,16 @@ The udev rule gives the logged-in user access to the keyboard right away
 
 **Note:**
 Keyboard color persists on reboot, but may reset to firmware default after a full power cycle.
-Use the KDE autostart option in the installer (or set it manually) to reapply your configuration automatically.
+Use the installer's autostart option (or set it manually) to reapply your configuration automatically.
 
 
 
-## Graphical Interface (vrgb-gui)
+## VRGB Suite (GUI, tray and automation)
 
-A PyQt6 desktop frontend is included. It is a thin GUI over the CLI: it imports
-`vrgb` as a module and drives the keyboard in-process, so the HID protocol and
-config logic are shared with the command line — no duplicated device code.
+The Suite is a PyQt6 frontend over Core: it imports `vrgb` as a module and drives
+the keyboard in-process, so the HID protocol and config logic stay in Core — no
+duplicated device code. Original GUI by Matt Warner
+([@mrw1986](https://github.com/mrw1986)).
 
 **Features**
 
@@ -185,29 +196,57 @@ config logic are shared with the command line — no duplicated device code.
 - Unified brightness slider (0–100%) that is **tied to the FN+F4 / FN+F3 keys**: it
   decomposes brightness into the firmware backlight step (`asus::kbd_backlight`, set
   via logind) and vrgb's HID intensity so the two layers never double-dim, and it
-  polls the firmware level so the hardware keys move the slider too. Falls back to
-  pure-HID brightness if the LED node / logind is unavailable.
-- A power on/off toggle
-- Firmware/autonomous mode toggle
-- OEM rainbow toggle (auto-disabled on device mappings that do not support it)
+  follows the firmware level (via the kernel's `brightness_hw_changed` notification,
+  polling only while the window is open) so the hardware keys move the slider too.
+  Falls back to pure-HID brightness if the LED node / logind is unavailable.
+- A power on/off toggle, firmware/autonomous mode toggle, OEM rainbow toggle
+  (auto-disabled on device mappings that do not support it)
 - Profile manager (save / load / delete)
-- "Start at login" toggles (restore lighting / start tray) managed from inside the app
-- System-tray applet: on/off, a Brightness submenu (discrete steps, current one
-  ticked), a Color submenu (preset swatches + a "More colors…" dialog), and profile
-  loading; closing the window hides it to the tray. (The tray uses submenus rather
-  than embedded widgets because KDE renders tray menus over DBusMenu, which does not
-  support embedded slider/widget items.)
-- Falls back to a Polkit (`pkexec`) password prompt if the `vrgb` group is not yet
-  active in your session (i.e. before the first logout/login after install)
+- System-tray applet: on/off, a Brightness submenu, a Color submenu (preset
+  swatches + a "More colors…" dialog), and profile loading; closing the window
+  hides it to the tray. (Submenus rather than embedded widgets, because KDE renders
+  tray menus over DBusMenu, which does not support embedded widgets.)
+- **Turn off after inactivity** — the backlight returns on the next key/mouse
+  input. Only the live HID intensity changes; the saved brightness stays.
+  Idle detection is picked automatically:
 
-**Install (after `./install.sh`)**
+  | Session | Backend |
+  |---|---|
+  | GNOME | Mutter IdleMonitor (D-Bus, event-driven) |
+  | KDE Plasma (Wayland), sway, Hyprland, labwc / wayfire (LXQt), niri, COSMIC | Wayland `ext-idle-notify-v1` (event-driven, no extra dependencies) |
+  | X11 sessions (LXQt, XFCE, KDE X11, …) | XScreenSaver extension (`libXss`); checks only when the timeout could have passed |
 
-    chmod +x install-gui.sh
-    ./install-gui.sh
+- **Keep off during daytime** — between sunrise and sunset at the configured
+  location the backlight is switched off; it comes back at sunset if it was on.
+  Sun times are computed locally (no network); the location is suggested offline
+  from the system timezone's reference city (e.g. `Europe/Warsaw` → Warsaw).
+- **Session start** — started at login (`vrgb-gui --tray`), it restores your
+  lighting, or keeps it off if it is daytime and daytime-off is on.
+- Falls back to a Polkit (`pkexec`) password prompt if the keyboard is not
+  accessible in your session; it only ever runs the root-owned system `vrgb`.
 
-Requires `PyQt6` (`sudo dnf install python3-pyqt6` on Fedora). Launch it from your
-application menu (search "VRGB") or run `vrgb-gui`. Start the tray on login with
-the installer's autostart option, or run `vrgb-gui --tray`.
+**Running it on every desktop**
+
+- Only one copy runs: starting `vrgb-gui` again opens the window of the running
+  one; `vrgb-gui --quit` stops it.
+- `vrgb-gui --tray` keeps running in the background even without a system tray
+  (e.g. sway without a bar), so the automation still works.
+- Login autostart: "Start VRGB in the tray at login" writes an XDG autostart entry
+  (GNOME, KDE, LXQt, XFCE, Cinnamon, …). On compositors without XDG autostart
+  (sway, Hyprland, …) add `exec vrgb-gui --tray` to the compositor config, or — if
+  your session starts `graphical-session.target` (e.g. via uwsm) — enable the user
+  unit: `systemctl --user enable --now vrgb-gui.service`.
+- The tray icon needs a StatusNotifierItem host (KDE/LXQt/XFCE panels, waybar's
+  `tray` module, or the AppIndicator extension on GNOME).
+
+**Layout**
+
+    suite/vrgb_suite/   app.py (window, tray, entry point), worker.py (device I/O
+                        thread), idle.py, sun.py, system.py, widgets.py, core.py
+    suite/data/         .desktop launcher and systemd user unit
+    suite/pyproject.toml  for distro packages (`vrgb-suite`, command `vrgb-gui`)
+
+Run from a checkout without installing: `PYTHONPATH=.:suite python3 -m vrgb_suite`.
 
 
 
