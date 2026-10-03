@@ -29,9 +29,9 @@ sudo usermod -aG vrgb "$USER"
 
 echo "[4/5] Installing udev rule..."
 
-sudo tee /etc/udev/rules.d/99-vrgb.rules > /dev/null <<EOF
-SUBSYSTEM=="hidraw", KERNELS=="i2c-ITE5570*", MODE="0660", GROUP="vrgb"
-EOF
+# 70- so the uaccess tag is applied (it must sort before 73-seat-late.rules)
+sudo install -m 644 packaging/70-vrgb.rules /etc/udev/rules.d/70-vrgb.rules
+sudo rm -f /etc/udev/rules.d/99-vrgb.rules   # rule name used before v0.4
 
 echo "[5/5] Reloading udev rules..."
 
@@ -63,5 +63,5 @@ fi
 echo
 echo "Installation complete."
 echo
-echo "IMPORTANT:"
-echo "Log out and log back in for group membership to apply."
+echo "The logged-in user can control the keyboard right away (udev uaccess)."
+echo "Group membership (for other sessions) applies after the next login."

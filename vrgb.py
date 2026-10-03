@@ -223,8 +223,20 @@ def load_config():
 
 
 def save_config(cfg):
+    # Atomic replace, so a crash or a concurrent writer (another vrgb run, a
+    # frontend) never leaves a truncated file that load_config() would discard.
+    # Keys this module does not know are kept, so frontends can store their own.
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    tmp = CONFIG_FILE.with_name(f".{CONFIG_FILE.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2))
+    if os.geteuid() == 0:
+        # Elevated (sudo/pkexec) run: keep the file owned by the real user.
+        try:
+            st = CONFIG_DIR.stat()
+            os.chown(tmp, st.st_uid, st.st_gid)
+        except OSError:
+            pass
+    os.replace(tmp, CONFIG_FILE)
 
 
 # Config semantics:
@@ -840,7 +852,8 @@ Example: vrgb --debug status
         die("Unknown command")
 
 
-if __name__ == "__main__":
+def run():
+    """Console entry point (also used by packaged installs)."""
     try:
         main()
     except PermissionError as e:
@@ -848,3 +861,7 @@ if __name__ == "__main__":
         if path and str(path).startswith(str(ASUS_WMI_BASE)):
             die("Permission denied to ASUS WMI debugfs. OEM rainbow requires sudo/root.")
         die("Permission denied to HID device. Run with sudo or install a udev rule.")
+
+
+if __name__ == "__main__":
+    run()
