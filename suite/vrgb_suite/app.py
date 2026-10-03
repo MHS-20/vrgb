@@ -1,61 +1,22 @@
-#!/usr/bin/env python3
-"""
-VRGB GUI — a PyQt6 frontend for the `vrgb` CLI (ASUS Vivobook ITE5570 RGB keyboards).
+"""VRGB Suite: app."""
 
-Design:
-  * The GUI imports the installed `vrgb` script as a module (importlib) and calls its
-    functions in-process for low-latency control of the keyboard. This reuses the exact
-    HID protocol, report-id mapping and config logic from the CLI — no duplication.
-  * All device I/O happens on a dedicated worker thread so the UI never blocks.
-  * If opening the hidraw device raises PermissionError (e.g. the user is in the `vrgb`
-    group but has not logged out/in yet, so the group is not active in this session),
-    persisting actions fall back to `pkexec vrgb ...`, which prompts for a password via
-    Polkit and runs as root. Live "preview" drags are best-effort and silently skipped
-    in that case (to avoid password spam) until the group is active.
-
-    The pkexec fallback ONLY ever runs the root-owned /usr/local/bin/vrgb binary; it
-    never runs a user-writable script as root. The CLI honours PKEXEC_UID so the
-    elevated run reads/writes the invoking user's ~/.config/vrgb, not /root's.
-
-Unified brightness:
-  The ASUS keyboard has TWO brightness layers that multiply:
-    * the firmware backlight (FN+F4 / FN+F3) -> /sys/class/leds/asus::kbd_backlight,
-      a coarse 0..max (max=3) level set via logind (passwordless for the active session);
-    * vrgb's HID "intensity" byte (0..255), the fine per-color scaling.
-  The slider exposes a single unified brightness B (0..100%). It is decomposed into a
-  firmware step F and an HID intensity I such that (F/max) * (I/255) == B, so the two
-  layers never double-dim. The firmware level is polled, so FN+F4/F3 move the slider
-  (and the HID intensity) too. If the LED node or logind is unavailable the GUI falls
-  back to pure-HID brightness (B == I).
-
-State (color / intensity / profiles / autonomous) lives in ~/.config/vrgb/config.json,
-read through the imported module's load_config().
-"""
-
-import sys
-import os
 import math
-import copy
+import os
+import sys
 import time
-import queue
-import subprocess
-import importlib.util
-import importlib.machinery
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF
-from PyQt6.QtGui import (
-    QColor,
-    QConicalGradient,
-    QRadialGradient,
-    QPainter,
-    QPen,
-    QBrush,
-    QIcon,
-    QPixmap,
-    QAction,
-    QActionGroup,
+from PyQt6.QtCore import (
+    pyqtClassInfo,
+    Qt,
+    QTimer,
+    QObject,
+    QSocketNotifier,
+    QFileSystemWatcher,
+    pyqtSlot,
 )
+from PyQt6.QtDBus import QDBusConnection, QDBusInterface
+from PyQt6.QtGui import QColor, QAction, QActionGroup
 from PyQt6.QtWidgets import (
     QApplication,
     QWidget,
@@ -65,6 +26,8 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QLabel,
     QSlider,
+    QSpinBox,
+    QDoubleSpinBox,
     QPushButton,
     QLineEdit,
     QListWidget,
@@ -75,517 +38,16 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QSystemTrayIcon,
     QMenu,
-    QSizePolicy,
     QFrame,
-    QWidgetAction,
     QColorDialog,
 )
 
-
-# ----------------------------------------------------------------------------
-# Locate + import the vrgb core script as a module
-# ----------------------------------------------------------------------------
-
-def _core_candidates():
-    here = Path(__file__).resolve().parent
-    return [
-        Path("/usr/local/bin/vrgb"),   # installed CLI (preferred)
-        here / "vrgb.py",              # running from the repo checkout
-    ]
-
-
-def load_core():
-    for path in _core_candidates():
-        if path.exists():
-            loader = importlib.machinery.SourceFileLoader("vrgb_core", str(path))
-            spec = importlib.util.spec_from_loader(loader.name, loader)
-            mod = importlib.util.module_from_spec(spec)
-            loader.exec_module(mod)   # main() is guarded by __name__ == "__main__"
-            return mod, path
-    raise FileNotFoundError(
-        "Could not find the vrgb core script. Install it (./install.sh) or run the GUI "
-        "from the repository checkout next to vrgb.py."
-    )
-
-
-def pkexec_target():
-    """A SAFE root-owned binary to run under pkexec, or None.
-
-    Running a user-writable file as root is a local privilege-escalation primitive,
-    so we require /usr/local/bin/vrgb to exist, be owned by root, and not be group-
-    or world-writable. We never fall back to the (user-owned) repo checkout.
-    """
-    p = Path("/usr/local/bin/vrgb")
-    try:
-        st = p.stat()
-    except OSError:
-        return None
-    if st.st_uid != 0:
-        return None
-    if st.st_mode & 0o022:          # group/other writable -> unsafe
-        return None
-    return str(p)
-
-
-# ----------------------------------------------------------------------------
-# Firmware keyboard backlight (FN+F4 / FN+F3) via logind
-# ----------------------------------------------------------------------------
-
-class KbdBacklight:
-    """Reads/writes /sys/class/leds/asus::kbd_backlight.
-
-    Reads come straight from sysfs (world-readable). Writes go through logind's
-    SetBrightness, which Polkit allows for the active local session without a
-    password. Returns gracefully degraded values when the node is absent.
-    """
-
-    PATH = Path("/sys/class/leds/asus::kbd_backlight")
-    LED_NAME = "asus::kbd_backlight"
-
-    def __init__(self):
-        self.available = self.PATH.exists()
-        self.max = (self._read_int("max_brightness") or 0) if self.available else 0
-        if self.max <= 0:
-            self.available = False
-
-    def _read_int(self, name):
-        try:
-            return int((self.PATH / name).read_text().strip())
-        except (OSError, ValueError):
-            return None
-
-    def level(self):
-        return self._read_int("brightness")
-
-    @staticmethod
-    def set_level(level):
-        try:
-            subprocess.run(
-                ["busctl", "call", "org.freedesktop.login1",
-                 "/org/freedesktop/login1/session/auto",
-                 "org.freedesktop.login1.Session", "SetBrightness", "ssu",
-                 "leds", KbdBacklight.LED_NAME, str(int(level))],
-                check=True, capture_output=True, text=True, timeout=10,
-            )
-            return True
-        except Exception:
-            return False
-
-
-# ----------------------------------------------------------------------------
-# Login autostart (~/.config/autostart) — user-managed, no root needed
-# ----------------------------------------------------------------------------
-
-class Autostart:
-    """Create/remove the per-user XDG autostart .desktop entries.
-
-    Two independent entries:
-      * 'restore' -> reapply the saved lighting at login (`vrgb restore`)
-      * 'tray'    -> start the GUI minimised to the tray (`vrgb-gui --tray`)
-    """
-
-    DIR = Path.home() / ".config" / "autostart"
-    ENTRIES = {
-        "restore": {
-            "file": "vrgb.desktop",
-            "name": "VRGB Restore",
-            "comment": "Restore keyboard RGB state on login",
-            "exec": "/usr/local/bin/vrgb restore",
-            "icon": "vrgb",
-        },
-        "tray": {
-            "file": "vrgb-gui.desktop",
-            "name": "VRGB (tray)",
-            "comment": "Keyboard RGB control tray applet",
-            "exec": "/usr/local/bin/vrgb-gui --tray",
-            "icon": "vrgb",
-        },
-    }
-
-    @classmethod
-    def path(cls, key):
-        return cls.DIR / cls.ENTRIES[key]["file"]
-
-    @classmethod
-    def is_enabled(cls, key):
-        p = cls.path(key)
-        if not p.exists():
-            return False
-        try:
-            low = p.read_text(errors="ignore").lower()
-        except OSError:
-            return False
-        if "hidden=true" in low:
-            return False
-        if "x-gnome-autostart-enabled=false" in low:
-            return False
-        return True
-
-    @classmethod
-    def set_enabled(cls, key, enabled):
-        p = cls.path(key)
-        if enabled:
-            e = cls.ENTRIES[key]
-            cls.DIR.mkdir(parents=True, exist_ok=True)
-            p.write_text(
-                "[Desktop Entry]\n"
-                "Type=Application\n"
-                f"Name={e['name']}\n"
-                f"Comment={e['comment']}\n"
-                f"Exec={e['exec']}\n"
-                f"Icon={e['icon']}\n"
-                "Terminal=false\n"
-                "X-GNOME-Autostart-enabled=true\n"
-            )
-        else:
-            try:
-                p.unlink()
-            except FileNotFoundError:
-                pass
-
-
-# ----------------------------------------------------------------------------
-# Worker thread: serializes all device I/O off the UI thread
-# ----------------------------------------------------------------------------
-
-class DeviceWorker(QThread):
-    op_done = pyqtSignal(str, bool, str)        # op name, ok, human message
-    device_status = pyqtSignal(object, str)     # devinfo dict or None, error message
-    config_updated = pyqtSignal(dict)           # fresh config snapshot
-
-    def __init__(self, mod, parent=None):
-        super().__init__(parent)
-        self.mod = mod
-        self.pkexec_bin = pkexec_target()
-        self.q: "queue.Queue" = queue.Queue()
-        self._devinfo = None
-        self._running = True
-        self._proc = None  # tracked pkexec subprocess, for shutdown
-
-    # -- public API (called from the UI thread) --
-    def submit(self, op, *args):
-        self.q.put((op, args))
-
-    def stop(self):
-        self._running = False
-        p = self._proc
-        if p is not None and p.poll() is None:
-            try:
-                p.kill()
-            except Exception:
-                pass
-        self.q.put(("quit", ()))
-
-    # -- internals (run on the worker thread) --
-    def run(self):
-        while self._running:
-            try:
-                op, args = self.q.get(timeout=0.25)
-            except queue.Empty:
-                continue
-            if op == "quit":
-                break
-            try:
-                self._dispatch(op, args)
-            except Exception as exc:  # never let the worker die
-                self.op_done.emit(op, False, f"{type(exc).__name__}: {exc}")
-
-    def _ensure_device(self):
-        if self._devinfo is not None:
-            return self._devinfo
-        try:
-            self._devinfo = self.mod.find_device()
-            self.device_status.emit(self._devinfo, "")
-        except SystemExit:
-            self.device_status.emit(None, "VRGB keyboard not found")
-            raise
-        return self._devinfo
-
-    def _cfg(self):
-        return self.mod.load_config()
-
-    def _emit_cfg(self, cfg):
-        snap = dict(cfg)
-        snap["profiles"] = copy.deepcopy(cfg.get("profiles", {}))
-        self.config_updated.emit(snap)
-
-    def _run_cli(self, cli_args):
-        """Privileged fallback via pkexec (Polkit GUI password prompt)."""
-        if not self.pkexec_bin:
-            raise RuntimeError(
-                "Privileged fallback unavailable: install the vrgb CLI to "
-                "/usr/local/bin (run ./install.sh), then log out and back in."
-            )
-        self._proc = subprocess.Popen(
-            ["pkexec", self.pkexec_bin, *cli_args],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        try:
-            out, err = self._proc.communicate(timeout=120)
-            rc = self._proc.returncode
-        except subprocess.TimeoutExpired:
-            self._proc.kill()
-            self._proc.communicate()
-            raise RuntimeError("pkexec timed out waiting for authorization")
-        finally:
-            self._proc = None
-        if rc != 0:
-            raise RuntimeError((err or out or "pkexec failed").strip())
-
-    # -- per-op handlers --
-    def _dispatch(self, op, args):
-        handler = getattr(self, f"_op_{op}", None)
-        if handler is None:
-            self.op_done.emit(op, False, f"unknown op '{op}'")
-            return
-        handler(self.mod, *args)
-
-    def _op_detect(self, mod):
-        try:
-            self._ensure_device()
-        except SystemExit:
-            pass
-
-    def _op_fwlevel(self, mod, level):
-        if not KbdBacklight.set_level(level):
-            self.op_done.emit("fwlevel", False, "Could not set keyboard backlight level")
-
-    def _op_color(self, mod, hexcol, percent, persist):
-        try:
-            dev = self._ensure_device()
-        except SystemExit:
-            return
-        try:
-            if persist:
-                cfg = self._cfg()
-                mod.cmd_set(cfg, dev, hexcol, str(percent))
-                self._emit_cfg(cfg)
-                self.op_done.emit("color", True, f"Set #{hexcol}")
-            else:
-                r, g, b = mod.hex_to_rgb(hexcol)
-                intensity = mod.percent_to_intensity(percent)
-                mod.set_firmware_mode(dev, False)
-                mod.set_color(dev, r, g, b, intensity)
-        except PermissionError:
-            if persist:
-                self._run_cli(["set", hexcol, str(percent)])
-                self._emit_cfg(self._cfg())
-                self.op_done.emit("color", True, f"Set #{hexcol} (pkexec)")
-
-    def _op_power(self, mod, on):
-        try:
-            dev = self._ensure_device()
-        except SystemExit:
-            return
-        cfg = self._cfg()
-        try:
-            if on:
-                mod.cmd_restore(cfg, dev)
-            else:
-                mod.cmd_off(cfg, dev)
-            self._emit_cfg(cfg)
-            self.op_done.emit("power", True, "On" if on else "Off")
-        except PermissionError:
-            self._run_cli(["restore" if on else "off"])
-            self._emit_cfg(self._cfg())
-            self.op_done.emit("power", True, ("On" if on else "Off") + " (pkexec)")
-
-    def _op_auto(self, mod, on):
-        try:
-            dev = self._ensure_device()
-        except SystemExit:
-            return
-        cfg = self._cfg()
-        try:
-            mod.cmd_auto(cfg, dev, "on" if on else "off")
-            self._emit_cfg(cfg)
-            self.op_done.emit("auto", True, "Firmware mode " + ("on" if on else "off"))
-        except PermissionError:
-            self._run_cli(["auto", "on" if on else "off"])
-            self._emit_cfg(self._cfg())
-            self.op_done.emit("auto", True, "Firmware mode " + ("on" if on else "off") + " (pkexec)")
-
-    def _op_rainbow(self, mod, on):
-        try:
-            dev = self._ensure_device()
-        except SystemExit:
-            return
-        cfg = self._cfg()
-        try:
-            mod.cmd_rainbow(cfg, dev, "on" if on else "off")
-            self._emit_cfg(cfg)
-            self.op_done.emit("rainbow", True, "Rainbow " + ("on" if on else "off"))
-        except PermissionError:
-            self._run_cli(["rainbow", "on" if on else "off"])
-            self._emit_cfg(self._cfg())
-            self.op_done.emit("rainbow", True, "Rainbow " + ("on" if on else "off") + " (pkexec)")
-        except SystemExit:
-            self.op_done.emit("rainbow", False, "OEM rainbow not supported on this device")
-
-    def _op_profile_save(self, mod, name):
-        cfg = self._cfg()
-        mod.cmd_profile_save(cfg, name)
-        self._emit_cfg(cfg)
-        self.op_done.emit("profile_save", True, f"Saved profile '{name}'")
-
-    def _op_profile_delete(self, mod, name):
-        cfg = self._cfg()
-        try:
-            mod.cmd_profile_delete(cfg, name)
-            self._emit_cfg(cfg)
-            self.op_done.emit("profile_delete", True, f"Deleted profile '{name}'")
-        except SystemExit:
-            self.op_done.emit("profile_delete", False, f"Profile '{name}' not found")
-
-    def _op_profile_load(self, mod, name):
-        try:
-            dev = self._ensure_device()
-        except SystemExit:
-            return
-        cfg = self._cfg()
-        try:
-            mod.cmd_profile_load(cfg, dev, name)
-            self._emit_cfg(cfg)
-            self.op_done.emit("profile_load", True, f"Loaded profile '{name}'")
-        except PermissionError:
-            self._run_cli(["profile", "load", name])
-            self._emit_cfg(self._cfg())
-            self.op_done.emit("profile_load", True, f"Loaded profile '{name}' (pkexec)")
-        except SystemExit:
-            self.op_done.emit("profile_load", False, f"Profile '{name}' not found")
-
-
-# ----------------------------------------------------------------------------
-# HS color wheel widget
-# ----------------------------------------------------------------------------
-
-class ColorWheel(QWidget):
-    """Hue/Saturation wheel. Value (lightness) is supplied externally."""
-
-    hs_changed = pyqtSignal(float, float)   # hue 0..1, saturation 0..1
-    released = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._h = 0.0
-        self._s = 0.0
-        self._value = 1.0
-        self.setMinimumSize(220, 220)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-    def set_hsv(self, h, s, v):
-        self._h, self._s, self._value = h, s, v
-        self.update()
-
-    def set_value(self, v):
-        self._value = v
-        self.update()
-
-    def _geom(self):
-        side = min(self.width(), self.height()) - 8
-        cx = self.width() / 2.0
-        cy = self.height() / 2.0
-        return cx, cy, side / 2.0
-
-    def paintEvent(self, _evt):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        cx, cy, r = self._geom()
-        if r <= 0:
-            return
-        center = QPointF(cx, cy)
-
-        hue_grad = QConicalGradient(center, 0.0)
-        for i in range(0, 361, 30):
-            hue_grad.setColorAt(i / 360.0, QColor.fromHsvF((i % 360) / 360.0, 1.0, 1.0))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(hue_grad))
-        p.drawEllipse(center, r, r)
-
-        sat_grad = QRadialGradient(center, r)
-        sat_grad.setColorAt(0.0, QColor(255, 255, 255, 255))
-        sat_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
-        p.setBrush(QBrush(sat_grad))
-        p.drawEllipse(center, r, r)
-
-        if self._value < 1.0:
-            shade = int((1.0 - self._value) * 255)
-            p.setBrush(QColor(0, 0, 0, shade))
-            p.drawEllipse(center, r, r)
-
-        angle = self._h * 2.0 * math.pi
-        dist = self._s * r
-        mx = cx + dist * math.cos(angle)
-        my = cy - dist * math.sin(angle)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(0, 0, 0, 200), 3))
-        p.drawEllipse(QPointF(mx, my), 8, 8)
-        p.setPen(QPen(QColor(255, 255, 255, 230), 1.5))
-        p.drawEllipse(QPointF(mx, my), 8, 8)
-
-    def _pick(self, pos):
-        cx, cy, r = self._geom()
-        if r <= 0:
-            return
-        dx = pos.x() - cx
-        dy = cy - pos.y()
-        dist = math.hypot(dx, dy)
-        self._s = min(1.0, dist / r)
-        ang = math.atan2(dy, dx)
-        if ang < 0:
-            ang += 2.0 * math.pi
-        self._h = ang / (2.0 * math.pi)
-        self.update()
-        self.hs_changed.emit(self._h, self._s)
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._pick(e.position())
-
-    def mouseMoveEvent(self, e):
-        if e.buttons() & Qt.MouseButton.LeftButton:
-            self._pick(e.position())
-
-    def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self.released.emit()
-
-
-# ----------------------------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------------------------
-
-PRESETS = [
-    ("Red", "ff0000"), ("Orange", "ff6a00"), ("Yellow", "ffd400"),
-    ("Green", "00ff44"), ("Cyan", "00e5ff"), ("Blue", "0066ff"),
-    ("Purple", "aa00ff"), ("Magenta", "ff00aa"), ("White", "ffffff"),
-]
-
-
-def make_logo_icon():
-    for cand in ("/usr/share/pixmaps/vrgb.png",
-                 str(Path(__file__).resolve().parent / "assets" / "vrgblogodark.png")):
-        if os.path.exists(cand):
-            ic = QIcon(cand)
-            if not ic.isNull():
-                return ic
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    grad = QConicalGradient(32, 32, 0)
-    for i in range(0, 361, 30):
-        grad.setColorAt(i / 360.0, QColor.fromHsvF((i % 360) / 360.0, 1.0, 1.0))
-    p.setPen(QPen(QBrush(grad), 10))
-    p.drawEllipse(10, 10, 44, 44)
-    p.end()
-    return QIcon(pm)
-
-
-def swatch_icon(hexc):
-    pm = QPixmap(16, 16)
-    pm.fill(QColor("#" + hexc))
-    return QIcon(pm)
+from . import sun
+from .core import load_core
+from .idle import make_idle_backend
+from .system import Autostart, KbdBacklight
+from .widgets import PRESETS, ColorWheel, make_logo_icon, swatch_icon
+from .worker import DeviceWorker
 
 
 # ----------------------------------------------------------------------------
@@ -593,7 +55,7 @@ def swatch_icon(hexc):
 # ----------------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
-    def __init__(self, worker: DeviceWorker, mod):
+    def __init__(self, worker: DeviceWorker, mod, session_start=False):
         super().__init__()
         self.worker = worker
         self.mod = mod
@@ -616,6 +78,15 @@ class MainWindow(QMainWindow):
         cfg = mod.load_config()
         self._color = QColor("#" + cfg.get("color", "aa00ff"))
 
+        # Automation: idle dimming + daytime off
+        self._auto = {}                  # last applied automation settings
+        self._dimmed = False
+        self._day_state = None           # None = not evaluated yet
+        self._suggested = sun.guess_location()
+        self.idle_mon = make_idle_backend(self)
+        self.idle_mon.idle.connect(self._on_user_idle)
+        self.idle_mon.active.connect(self._on_user_active)
+
         self._build_ui()
         self._wire_worker()
 
@@ -625,15 +96,46 @@ class MainWindow(QMainWindow):
         self._preview.timeout.connect(self._emit_preview)
         self._pending = None             # (hex, hid_percent)
 
+        # Started for the session (--tray): restore the lighting, or keep it off
+        # if it is daytime and daytime-off is on. Queued before the day check.
+        if session_start:
+            worker.submit("login")
+
+        # Wall-clock check once a minute (QTimer is monotonic and pauses in suspend,
+        # so a single long timer to sunrise/sunset would fire late after resume).
+        self._day_timer = QTimer(self)
+        self._day_timer.setInterval(60_000)
+        self._day_timer.timeout.connect(self._check_day)
+        self._day_timer.start()
+
         self._load_from_cfg(cfg)
         self._load_autostart_state()
 
-        # Poll the firmware backlight so FN+F4/F3 move the slider too.
+        # Follow FN+F4/F3. The kernel signals key-driven changes through
+        # brightness_hw_changed (sysfs_notify -> POLLPRI), so in the tray we sleep
+        # until it fires; the 300 ms poll only runs while the window is visible.
+        self._fw_timer = QTimer(self)
+        self._fw_timer.setInterval(300)
+        self._fw_timer.timeout.connect(self._poll_firmware)
+        self._hw_notifier = None
+        self._hw_fd = None
         if self.kbd.available:
-            self._fw_timer = QTimer(self)
-            self._fw_timer.setInterval(300)
-            self._fw_timer.timeout.connect(self._poll_firmware)
-            self._fw_timer.start()
+            self._watch_hw_changed()
+            if self._hw_notifier is None:
+                self._fw_timer.start()   # no notification support: keep polling
+
+        # Pick up config changes made outside this process (the CLI, an
+        # editor). The directory is watched because saves replace the file atomically.
+        self._cfg_mtime = self._config_mtime()
+        self._cfg_watch = QFileSystemWatcher(self)
+        self._cfg_reload = QTimer(self)
+        self._cfg_reload.setSingleShot(True)
+        self._cfg_reload.setInterval(200)
+        self._cfg_reload.timeout.connect(self._reload_external_cfg)
+        cfg_dir = Path(getattr(mod, "CONFIG_DIR", ""))
+        if cfg_dir.is_dir():
+            self._cfg_watch.addPath(str(cfg_dir))
+            self._cfg_watch.directoryChanged.connect(lambda _p: self._cfg_reload.start())
 
         self.worker.submit("detect")
 
@@ -656,6 +158,8 @@ class MainWindow(QMainWindow):
         return int(round(fw_level * hid_percent / self.kbd.max))
 
     def _set_firmware(self, level):
+        if level == self._expected_fw:
+            return                       # each change spawns busctl; skip no-ops
         self._expected_fw = level
         self._fw_ignore_until = time.monotonic() + 0.6
         self.worker.submit("fwlevel", level)
@@ -750,13 +254,70 @@ class MainWindow(QMainWindow):
 
         sbox = QGroupBox("Start at login")
         sgl = QVBoxLayout(sbox)
-        self.auto_restore_chk = QCheckBox("Restore my lighting at login")
-        self.auto_restore_chk.setToolTip("Runs `vrgb restore` on login (color can reset on a full power cycle)")
-        self.auto_tray_chk = QCheckBox("Start the tray icon at login")
-        self.auto_tray_chk.setToolTip("Launches this app minimised to the system tray on login")
-        sgl.addWidget(self.auto_restore_chk)
+        self.auto_tray_chk = QCheckBox("Start VRGB in the tray at login")
+        self.auto_tray_chk.setToolTip(
+            "Restores your lighting at login (or keeps it off by day if daytime-off is on) "
+            "and runs the automatic off")
+        self.auto_restore_chk = QCheckBox("Only restore my lighting at login (no tray)")
+        self.auto_restore_chk.setToolTip(
+            "Runs `vrgb restore` on login (color can reset on a full power cycle); "
+            "not needed when the tray starts at login")
         sgl.addWidget(self.auto_tray_chk)
+        sgl.addWidget(self.auto_restore_chk)
         root.addWidget(sbox)
+
+        # Automation: idle dimming + daytime off
+        tbox = QGroupBox("Automatic off")
+        tgl = QGridLayout(tbox)
+        self.idle_enable_chk = QCheckBox("Turn off after inactivity")
+        self.idle_enable_chk.setToolTip(
+            "Switch the backlight off when no keys/mouse are used; it comes back on the next input")
+        tgl.addWidget(self.idle_enable_chk, 0, 0, 1, 2)
+        self.idle_spin = QSpinBox()
+        self.idle_spin.setRange(1, 600)
+        self.idle_spin.setValue(12)
+        self.idle_spin.setSuffix(" s")
+        self.idle_spin.setToolTip("Seconds of inactivity before the backlight goes off")
+        tgl.addWidget(self.idle_spin, 0, 2, 1, 2)
+
+        self.day_chk = QCheckBox("Keep off during daytime (sunrise → sunset)")
+        self.day_chk.setToolTip(
+            "While the sun is up at the location below the backlight stays off; "
+            "it comes back at sunset if it was on")
+        tgl.addWidget(self.day_chk, 1, 0, 1, 4)
+
+        tgl.addWidget(QLabel("Location"), 2, 0)
+        self.lat_spin = QDoubleSpinBox()
+        self.lat_spin.setRange(-90.0, 90.0)
+        self.lat_spin.setDecimals(4)
+        self.lat_spin.setPrefix("lat ")
+        self.lat_spin.setSuffix("°")
+        self.lon_spin = QDoubleSpinBox()
+        self.lon_spin.setRange(-180.0, 180.0)
+        self.lon_spin.setDecimals(4)
+        self.lon_spin.setPrefix("lon ")
+        self.lon_spin.setSuffix("°")
+        for sp in (self.lat_spin, self.lon_spin):
+            sp.setKeyboardTracking(False)   # valueChanged only once editing is done
+        tgl.addWidget(self.lat_spin, 2, 1)
+        tgl.addWidget(self.lon_spin, 2, 2)
+        self.suggest_btn = QPushButton("Suggest")
+        self.suggest_btn.setToolTip("Use the reference city of the system timezone (offline)")
+        self.suggest_btn.setEnabled(self._suggested_location() is not None)
+        tgl.addWidget(self.suggest_btn, 2, 3)
+
+        self.sun_lbl = QLabel("")
+        self.sun_lbl.setStyleSheet("color:#999;")
+        self.sun_lbl.setWordWrap(True)
+        tgl.addWidget(self.sun_lbl, 3, 0, 1, 4)
+        if self.idle_mon.available:
+            self.idle_enable_chk.setToolTip(
+                self.idle_enable_chk.toolTip() + f"\nIdle detection: {self.idle_mon.name}")
+        else:
+            self.idle_enable_chk.setToolTip(
+                "No idle detection for this session (needs GNOME, a Wayland compositor "
+                "with ext-idle-notify-v1, or X11 with the XScreenSaver extension)")
+        root.addWidget(tbox)
 
         self.setCentralWidget(central)
 
@@ -782,6 +343,12 @@ class MainWindow(QMainWindow):
         self.profile_list.itemDoubleClicked.connect(lambda _i: self._profile_load())
         self.auto_restore_chk.toggled.connect(lambda on: self._toggle_autostart("restore", on))
         self.auto_tray_chk.toggled.connect(lambda on: self._toggle_autostart("tray", on))
+        self.idle_enable_chk.toggled.connect(self._on_automation_changed)
+        self.idle_spin.valueChanged.connect(self._on_automation_changed)
+        self.day_chk.toggled.connect(self._on_automation_changed)
+        self.lat_spin.valueChanged.connect(self._on_automation_changed)
+        self.lon_spin.valueChanged.connect(self._on_automation_changed)
+        self.suggest_btn.clicked.connect(self._suggest_location)
 
     def _wire_worker(self):
         self.worker.op_done.connect(self._on_op_done)
@@ -813,7 +380,18 @@ class MainWindow(QMainWindow):
         self.power_btn.setText("On" if self._brightness_b > 0 else "Off")
         self.auto_chk.setChecked(bool(cfg.get("autonomous", False)))
         self._reload_profiles(cfg)
+        st = sun.settings(cfg)
+        self.idle_enable_chk.setChecked(st["idle_enabled"])
+        self.idle_spin.setValue(st["idle_timeout_seconds"])
+        self.day_chk.setChecked(st["day_off_enabled"])
+        lat, lon = st["latitude"], st["longitude"]
+        if lat is None and self._suggested_location() is not None:
+            lat, lon, _label = self._suggested_location()
+        if lat is not None:
+            self.lat_spin.setValue(lat)
+            self.lon_spin.setValue(lon)
         self._suppress = False
+        self._apply_automation(cfg)
 
     def _reload_profiles(self, cfg):
         self.profile_list.clear()
@@ -927,11 +505,105 @@ class MainWindow(QMainWindow):
             return
         self.worker.submit("rainbow", bool(checked))
 
+    def _config_mtime(self):
+        try:
+            return self.mod.CONFIG_FILE.stat().st_mtime_ns
+        except (OSError, AttributeError):
+            return None
+
+    def _reload_external_cfg(self):
+        mtime = self._config_mtime()
+        if mtime is None or mtime == self._cfg_mtime:
+            return
+        self._cfg_mtime = mtime
+        self.worker.config_updated.emit(self.mod.load_config())
+
+    # -- automation (idle dimming + daytime off) --
+    def _suggested_location(self):
+        return self._suggested
+
+    def _suggest_location(self):
+        sug = self._suggested_location()
+        if sug is None:
+            return
+        self._suppress = True
+        self.lat_spin.setValue(sug[0])
+        self.lon_spin.setValue(sug[1])
+        self._suppress = False
+        self._on_automation_changed()
+
+    def _on_automation_changed(self):
+        if self._suppress:
+            return
+        values = {
+            "idle_enabled": self.idle_enable_chk.isChecked(),
+            "idle_timeout_seconds": self.idle_spin.value(),
+            "day_off_enabled": self.day_chk.isChecked(),
+            "latitude": round(self.lat_spin.value(), 4),
+            "longitude": round(self.lon_spin.value(), 4),
+        }
+        self.idle_spin.setEnabled(values["idle_enabled"])
+        self.worker.submit("settings", values)   # echoes back via config_updated
+
+    def _apply_automation(self, cfg):
+        """Push config into the idle watch and the daytime check."""
+        cfg = sun.settings(cfg)
+        idle_ms = cfg["idle_timeout_seconds"] * 1000 if cfg["idle_enabled"] else 0
+        self.idle_spin.setEnabled(cfg["idle_enabled"])
+        self.idle_mon.set_timeout(idle_ms)
+        if idle_ms == 0 and self._dimmed:
+            self._on_user_active()
+
+        auto = {k: cfg.get(k) for k in ("day_off_enabled", "latitude", "longitude")}
+        if auto != self._auto:
+            self._auto = auto
+            self._day_state = None       # settings changed -> re-evaluate now
+        self._check_day()
+
+    def _on_user_idle(self):
+        self._dimmed = True
+        self.worker.submit("idle_dim")
+        self.idle_mon.watch_active()
+
+    def _on_user_active(self):
+        if self._dimmed:
+            self._dimmed = False
+            self.worker.submit("idle_restore")
+
+    def _check_day(self):
+        cfg = self._auto
+        lat, lon = cfg.get("latitude"), cfg.get("longitude")
+        if lat is None:
+            sug = self._suggested_location()
+            if sug is None:
+                self.sun_lbl.setText("Set a location to use daytime off.")
+                return
+            lat, lon = sug[0], sug[1]
+        is_day = bool(cfg.get("day_off_enabled")) and sun.is_daytime(lat, lon)
+
+        times = sun.sun_times(lat, lon)
+        if times is True:
+            txt = "Today: the sun does not set (polar day)."
+        elif times is False:
+            txt = "Today: the sun does not rise (polar night)."
+        else:
+            txt = f"Today: sunrise {times[0]:%H:%M} · sunset {times[1]:%H:%M}"
+        if cfg.get("latitude") is None and self._suggested is not None:
+            txt += f" — suggested from timezone {self._suggested[2]}"
+        self.sun_lbl.setText(txt)
+
+        if is_day == self._day_state:
+            return                       # act on transitions only: manual "on" by day sticks
+        self._day_state = is_day
+        self.worker.submit("day_off" if is_day else "day_on")
+
     # -- autostart --
     def _load_autostart_state(self):
         self._suppress = True
-        self.auto_restore_chk.setChecked(Autostart.is_enabled("restore"))
-        self.auto_tray_chk.setChecked(Autostart.is_enabled("tray"))
+        tray = Autostart.is_enabled("tray")
+        self.auto_tray_chk.setChecked(tray)
+        self.auto_restore_chk.setChecked(Autostart.is_enabled("restore") and not tray)
+        self.auto_restore_chk.setEnabled(not tray)   # the tray restores by itself
         self._suppress = False
 
     def _toggle_autostart(self, key, on):
@@ -939,6 +611,8 @@ class MainWindow(QMainWindow):
             return
         try:
             Autostart.set_enabled(key, on)
+            if key == "tray" and on:
+                Autostart.set_enabled("restore", False)   # avoid a double restore
             ok = True
         except OSError as exc:
             ok = False
@@ -949,8 +623,43 @@ class MainWindow(QMainWindow):
             (f"{'Enabled' if on else 'Disabled'} {label}") if ok
             else f"✗ autostart: {err}"
         )
+        self._load_autostart_state()
 
     # -- firmware (FN+F4/F3) polling --
+    def _watch_hw_changed(self):
+        path = self.kbd.PATH / "brightness_hw_changed"
+        try:
+            self._hw_fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            return
+        self._rearm_hw()
+        self._hw_notifier = QSocketNotifier(self._hw_fd, QSocketNotifier.Type.Exception, self)
+        self._hw_notifier.activated.connect(self._on_hw_changed)
+
+    def _rearm_hw(self):
+        # sysfs_notify only wakes a poller that has read the attribute; the read
+        # fails with ENODATA until the first FN key press, which still arms it.
+        try:
+            os.lseek(self._hw_fd, 0, os.SEEK_SET)
+            os.read(self._hw_fd, 16)
+        except OSError:
+            pass
+
+    def _on_hw_changed(self, *_args):
+        self._rearm_hw()
+        self._poll_firmware()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self.kbd.available:
+            self._poll_firmware()
+            self._fw_timer.start()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        if self._hw_notifier is not None:
+            self._fw_timer.stop()        # notifier covers FN keys while hidden
+
     def _poll_firmware(self):
         if not self.kbd.available or self._interacting:
             return
@@ -1141,10 +850,63 @@ class Tray(QSystemTrayIcon):
 # Entry point
 # ----------------------------------------------------------------------------
 
+DBUS_NAME = "io.github.vrgb_dev.vrgb"
+
+
+@pyqtClassInfo("D-Bus Interface", DBUS_NAME)
+class SingleInstance(QObject):
+    """Session-bus name so only one copy runs the automation; a second launch of
+    `vrgb-gui` just asks the running one to show its window."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.window = None
+
+    @pyqtSlot()
+    def Quit(self):
+        tray = getattr(self.window, "tray", None) if self.window else None
+        if tray is not None:
+            tray._quit()
+        else:
+            QApplication.instance().quit()
+
+    @pyqtSlot()
+    def Show(self):
+        if self.window is not None:
+            self.window.showNormal()
+            self.window.raise_()
+            self.window.activateWindow()
+
+
+def claim_single_instance(background):
+    """Return the SingleInstance object, or None if another copy owns the name
+    (in which case it has been asked to show its window unless `background`)."""
+    bus = QDBusConnection.sessionBus()
+    if not bus.isConnected():
+        return SingleInstance()          # no session bus: nothing to coordinate
+    if not bus.registerService(DBUS_NAME):
+        if not background:
+            QDBusInterface(DBUS_NAME, "/", DBUS_NAME, bus).call("Show")
+        return None
+    inst = SingleInstance()
+    bus.registerObject("/", inst, QDBusConnection.RegisterOption.ExportAllSlots)
+    return inst
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("VRGB GUI")
     app.setWindowIcon(make_logo_icon())
+    background = "--tray" in sys.argv
+
+    if "--quit" in sys.argv:
+        bus = QDBusConnection.sessionBus()
+        QDBusInterface(DBUS_NAME, "/", DBUS_NAME, bus).call("Quit")
+        return 0
+
+    instance = claim_single_instance(background)
+    if instance is None:
+        return 0                         # already running
 
     try:
         mod, _core_path = load_core()
@@ -1152,26 +914,33 @@ def main():
         QMessageBox.critical(None, "VRGB GUI", str(exc))
         return 1
 
+    Autostart.migrate()
+
     worker = DeviceWorker(mod)
     worker.start()
 
-    window = MainWindow(worker, mod)
+    window = MainWindow(worker, mod, session_start=background)
+    instance.window = window
 
     tray = Tray(window, worker, app) if QSystemTrayIcon.isSystemTrayAvailable() else None
+    window.tray = tray
     if tray:
-        app.setQuitOnLastWindowClosed(False)
         tray.show()
+    # Started for the session (--tray): keep the automation alive when the window
+    # is closed, even without a tray (e.g. sway without a bar) — run `vrgb-gui`
+    # again to bring the window back.
+    if tray or background:
+        app.setQuitOnLastWindowClosed(False)
 
         def close_event(e):
             e.ignore()
             window.hide()
-            tray.showMessage("VRGB", "Still running in the tray.",
-                             QSystemTrayIcon.MessageIcon.Information, 2000)
+            if tray:
+                tray.showMessage("VRGB", "Still running in the tray.",
+                                 QSystemTrayIcon.MessageIcon.Information, 2000)
         window.closeEvent = close_event
 
-    if "--tray" in sys.argv and tray:
-        pass  # start hidden to the tray
-    else:
+    if not background:
         window.show()
 
     rc = app.exec()
@@ -1182,5 +951,3 @@ def main():
     return rc
 
 
-if __name__ == "__main__":
-    sys.exit(main())
