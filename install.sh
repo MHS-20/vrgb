@@ -99,7 +99,15 @@ Icon=vrgb
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
-        echo "Autostart installed. (No XDG autostart on your desktop? See README: vrgb-gui.service)"
+        echo "Autostart installed."
+    else
+        # Desktops without XDG autostart (sway, Hyprland, ...): the same via systemd
+        read -p "Start the tray with a systemd user service instead (any desktop)? (y/n): " SYSTEMD_AUTOSTART
+        if [[ "$SYSTEMD_AUTOSTART" == "y" || "$SYSTEMD_AUTOSTART" == "Y" ]]; then
+            systemctl --user daemon-reload
+            systemctl --user enable vrgb-gui.service
+            echo "systemd autostart enabled (vrgb-gui.service)."
+        fi
     fi
 else
 read -p "Install autostart restore? (y/n): " AUTOSTART
@@ -122,7 +130,6 @@ EOF
 echo "Autostart installed."
 
 fi
-fi
 
 echo
 read -p "Install systemd user autostart restore (works on any desktop environment)? (y/n): " SYSTEMD_AUTOSTART
@@ -139,6 +146,7 @@ systemctl --user enable vrgb-restore.service
 echo "systemd autostart installed and enabled."
 echo "It will start restoring your saved state from your next login onward."
 
+fi
 fi
 
 echo

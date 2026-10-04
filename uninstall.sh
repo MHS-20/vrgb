@@ -16,6 +16,7 @@ fi
 
 if [ -e /usr/local/bin/vrgb-gui ] || [ -d /usr/local/lib/vrgb-gui ]; then
     echo "Removing VRGB Suite (GUI)..."
+    systemctl --user disable --now vrgb-gui.service 2>/dev/null || true
     /usr/local/bin/vrgb-gui --quit 2>/dev/null || true   # stop the running tray via D-Bus
     sudo rm -rf /usr/local/lib/vrgb-gui
     sudo rm -f /usr/local/bin/vrgb-gui /usr/share/applications/vrgb-gui.desktop \
