@@ -75,7 +75,8 @@ EOF
 
     echo "[Suite 2/3] Installing launcher and icon ..."
     sudo install -m 644 suite/data/vrgb-gui.desktop /usr/share/applications/vrgb-gui.desktop
-    sudo install -m 644 assets/vrgblogodark.png /usr/share/pixmaps/vrgb.png
+    sudo install -Dm644 suite/data/vrgb.svg /usr/share/icons/hicolor/scalable/apps/vrgb.svg
+    sudo gtk-update-icon-cache -q -t /usr/share/icons/hicolor 2>/dev/null || true
     sudo update-desktop-database /usr/share/applications 2>/dev/null || true
 
     echo "[Suite 3/3] Installing the systemd user unit (optional autostart) ..."

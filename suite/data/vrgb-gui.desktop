@@ -9,3 +9,4 @@ Terminal=false
 Categories=Utility;Settings;HardwareSettings;
 Keywords=rgb;keyboard;led;backlight;asus;vivobook;color;
 StartupNotify=true
+StartupWMClass=vrgb-gui

@@ -895,7 +895,11 @@ def claim_single_instance(background):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("VRGB GUI")
+    app.setApplicationName("vrgb-gui")
+    app.setApplicationDisplayName("VRGB")
+    # Matches vrgb-gui.desktop, so the shell shows our icon/name for the window
+    # (Wayland app_id; otherwise Qt would report the interpreter, "python3").
+    app.setDesktopFileName("vrgb-gui")
     app.setWindowIcon(make_logo_icon())
     background = "--tray" in sys.argv
 
