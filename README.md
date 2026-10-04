@@ -162,7 +162,8 @@ Clone the repository and run the installer.
     chmod +x install.sh
     ./install.sh
 
-After installation log out and log back in so group permissions apply.
+The udev rule gives the logged-in user access to the keyboard right away
+(`uaccess`); membership in the `vrgb` group applies after the next login.
 
 
 **Note:**
@@ -247,6 +248,28 @@ Debug Mode
 About
 
     vrgb about
+
+
+## Using vrgb as a library
+
+`vrgb.py` is both the CLI and a plain Python module (standard library only), so
+frontends can reuse the HID protocol and config handling instead of copying them:
+
+    import vrgb
+
+    dev = vrgb.find_device()                 # dict: path, model, report ids, …
+    cfg = vrgb.load_config()
+    vrgb.cmd_set(cfg, dev, "00aaff", 70)     # same as `vrgb set 00aaff 70`
+    vrgb.set_color(dev, 255, 0, 0, vrgb.percent_to_intensity(40))  # live, not saved
+
+The `cmd_*` functions behave like the matching CLI commands (they update and
+save `~/.config/vrgb/config.json`); `set_color` / `set_firmware_mode` only talk
+to the device. `save_config` writes atomically and keeps keys it does not know,
+so a frontend may store its own settings in the same file.
+
+Distro packages install the module (`pyproject.toml`); `./install.sh` keeps
+installing the single file to `/usr/local/bin/vrgb`.
+
 
 
 ## Manual Installation

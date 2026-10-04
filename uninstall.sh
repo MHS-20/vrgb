@@ -16,8 +16,8 @@ fi
 
 echo "[2/5] Removing udev rule..."
 
-if [ -f /etc/udev/rules.d/99-vrgb.rules ]; then
-    sudo rm /etc/udev/rules.d/99-vrgb.rules
+if [ -f /etc/udev/rules.d/70-vrgb.rules ] || [ -f /etc/udev/rules.d/99-vrgb.rules ]; then
+    sudo rm -f /etc/udev/rules.d/70-vrgb.rules /etc/udev/rules.d/99-vrgb.rules
     echo "Removed udev rule."
 else
     echo "Udev rule not found. Skipping."
