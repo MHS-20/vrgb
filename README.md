@@ -244,7 +244,7 @@ duplicated device code. Original GUI by Matt Warner
     suite/vrgb_suite/   app.py (window, tray, entry point), worker.py (device I/O
                         thread), idle.py, sun.py, system.py, widgets.py, core.py
     suite/data/         .desktop launcher and systemd user unit
-    suite/pyproject.toml  for distro packages (`vrgb-suite`, command `vrgb-gui`)
+    suite/pyproject.toml  for distro packages (package and command `vrgb-gui`)
 
 Run from a checkout without installing: `PYTHONPATH=.:suite python3 -m vrgb_suite`.
 

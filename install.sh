@@ -6,7 +6,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-SUITE_LIB=/usr/local/lib/vrgb-suite
+SUITE_LIB=/usr/local/lib/vrgb-gui
 
 echo "VRGB Installer (v0.3.5)"
 echo "---------------"
