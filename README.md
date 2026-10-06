@@ -487,7 +487,7 @@ With future updates in mind, this project will aim to continue to be as efficien
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) and [GitHub Releases](https://github.com/vrgb-dev/vrgb/releases).
+Release notes are generated from commit messages and published on [GitHub Releases](https://github.com/vrgb-dev/vrgb/releases).
 
 
 
