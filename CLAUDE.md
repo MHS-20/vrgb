@@ -38,7 +38,8 @@ PYTHONPATH=.:suite python3 -m vrgb_suite       # run Suite from checkout without
 - `worker.py` `DeviceWorker` (QThread) serializes all device I/O off the UI thread via a queue of `(op, args)`.
 - On `PermissionError`, persisting actions fall back to `pkexec vrgb ...`, but **only ever a root-owned system copy of the CLI**, never a user-writable script. Live previews are skipped instead.
 - Unified brightness: slider B is split into firmware backlight level F (`/sys/class/leds/asus::kbd_backlight` via logind, `system.py`) and HID intensity I with `(F/max)*(I/255) == B`.
-- Automation runs in the tray process: idle dimming (`idle.py`: GNOME Mutter, Wayland ext-idle-notify-v1, X11 backends) touches only HID intensity, never saved config; daytime-off uses locally computed sun times (`sun.py`).
+- Rainbow: the worker starts Core's `vrgb cycle` as a detached process (`_start_cycle`) instead of looping in-process; with a saved cycle, same-color "color" ops are brightness changes (`cmd_brightness`), a new color replaces the rainbow, and power-on/login/sunset resume it.
+- Automation runs in the tray process: idle dimming (`idle.py`: GNOME Mutter, Wayland ext-idle-notify-v1, X11 backends) touches only HID intensity, never saved config, and is skipped while a cycle is saved; daytime-off uses locally computed sun times (`sun.py`).
 
 ## Conventions
 

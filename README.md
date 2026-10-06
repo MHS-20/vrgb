@@ -199,14 +199,18 @@ duplicated device code. Original GUI by Matt Warner
   follows the firmware level (via the kernel's `brightness_hw_changed` notification,
   polling only while the window is open) so the hardware keys move the slider too.
   Falls back to pure-HID brightness if the LED node / logind is unavailable.
+- A **Rainbow** toggle (window and tray) that runs `vrgb rainbow`: it keeps running
+  after the window closes, comes back after logout/reboot, and follows the
+  brightness slider. Picking a color switches back to that static color.
 - A power on/off toggle and firmware/autonomous mode toggle
 - Profile manager (save / load / delete)
-- System-tray applet: on/off, a Brightness submenu, a Color submenu (preset
+- System-tray applet: on/off, Rainbow, a Brightness submenu, a Color submenu (preset
   swatches + a "More colors…" dialog), and profile loading; closing the window
   hides it to the tray. (Submenus rather than embedded widgets, because KDE renders
   tray menus over DBusMenu, which does not support embedded widgets.)
 - **Turn off after inactivity** — the backlight returns on the next key/mouse
-  input. Only the live HID intensity changes; the saved brightness stays.
+  input. Only the live HID intensity changes; the saved brightness stays. It is
+  paused while the rainbow is on.
   Idle detection is picked automatically:
 
   | Session | Backend |
