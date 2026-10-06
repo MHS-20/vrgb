@@ -296,6 +296,9 @@ Restore Saved State
 
     vrgb restore
 
+If the saved mode is the software rainbow cycle, `restore` resumes it and keeps
+running until another command takes over.
+
 Enable firmware lighting (Firmware Autonomous Mode)
 
     vrgb auto on
@@ -317,11 +320,15 @@ Software Rainbow Cycle (no sudo, works on all supported devices)
 
     vrgb cycle 100 4
 
-Runs in the foreground until stopped with Ctrl+C. Unlike `rainbow`, this
-does not depend on OEM firmware support and gives full control over speed
-and brightness. To run it continuously in the background (e.g. across
-logins), manage it with a process supervisor such as a systemd `--user`
-service.
+Unlike `rainbow`, this does not depend on OEM firmware support and gives full
+control over speed and brightness. It runs in the foreground and is saved as the
+current mode, so `vrgb restore` (and the autostart restore options below) resume
+it after a logout or reboot.
+
+While it runs, other commands take over cleanly: `set`, `auto`, `rainbow` or
+loading a profile stop the cycle and replace it, `brightness` changes the cycle's
+brightness, and `off` pauses it until the next `restore`. Pressing Ctrl+C stops it
+and it is not resumed at the next login.
 
 Debug Mode
 
@@ -424,17 +431,21 @@ Contents of `systemd/vrgb-restore.service`:
     After=graphical-session.target
 
     [Service]
-    Type=oneshot
+    Type=exec
     ExecStart=/usr/local/bin/vrgb restore
+    Restart=on-failure
+    RestartSec=2
 
     [Install]
     WantedBy=graphical-session.target
 
-The unit runs `vrgb restore` once at the start of your graphical session,
-so it will apply from your next login onward.
+The unit runs `vrgb restore` at the start of your graphical session, so it will
+apply from your next login onward. A static restore exits right away; a saved
+rainbow cycle keeps the service running for the session.
 
 You can install both the KDE and systemd autostart options at once if you
-like; they do the same thing and won't conflict.
+like; they do the same thing and won't conflict (if both resume a cycle, the
+later one takes over and the other exits).
 
 
 

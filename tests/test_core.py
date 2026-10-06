@@ -279,3 +279,88 @@ def test_profile_roundtrip(sent, config_dir, capsys):
     assert sent[-1][2] == bytes.fromhex("0100000000" "123456" "66")
     vrgb.cmd_profile_delete(cfg, "work")
     assert vrgb.load_config()["profiles"] == {}
+
+
+# ===== Rainbow cycle =====
+
+
+def run_cycle_until(monkeypatch, action, frames=3, start=None):
+    """Run `start` (default: cmd_cycle) and call `action()` after a few frames."""
+    calls = {"n": 0}
+
+    def sleep(_):
+        calls["n"] += 1
+        if calls["n"] == frames:
+            action()
+        if calls["n"] > frames + 5:
+            raise AssertionError("cycle did not stop")
+
+    monkeypatch.setattr(vrgb.time, "sleep", sleep)
+    (start or (lambda: vrgb.cmd_cycle(vrgb.load_config(), devinfo(DEVICES[0][0]), 80, 4, 20)))()
+
+
+def test_cycle_is_saved_and_stops_when_set_takes_over(sent, config_dir, monkeypatch, capsys):
+    dev = devinfo(DEVICES[0][0])
+    seen = {}
+
+    def take_over():
+        seen["cycle"] = vrgb.load_config()["cycle"]
+        vrgb.cmd_set(vrgb.load_config(), dev, "112233", 50)
+
+    run_cycle_until(monkeypatch, take_over)
+    assert seen["cycle"]["period"] == 4.0 and seen["cycle"]["fps"] == 20.0
+    assert "cycle" not in vrgb.load_config()
+    assert sent[-1][2] == bytes.fromhex("0100000000" "112233" "80")  # set's state re-applied last
+
+
+def test_off_pauses_cycle_and_restore_resumes_it(sent, config_dir, monkeypatch, capsys):
+    dev = devinfo(DEVICES[0][0])
+    run_cycle_until(monkeypatch, lambda: vrgb.cmd_off(vrgb.load_config(), dev))
+    assert sent[-1][2][-1] == 0
+    assert "cycle" in vrgb.load_config()
+
+    monkeypatch.setattr(vrgb, "find_device", lambda: dev)
+    monkeypatch.setattr(vrgb.sys, "argv", ["vrgb", "restore"])
+    sent.clear()
+    run_cycle_until(
+        monkeypatch, lambda: vrgb.cmd_set(vrgb.load_config(), dev, "000000", 10), start=vrgb.main
+    )
+    first_frame = sent[1][2]
+    assert first_frame[5:8] == bytes([255, 0, 0])  # cycle starts at hue 0
+    assert first_frame[8] == vrgb.percent_to_intensity(80)
+
+
+def test_brightness_adjusts_running_cycle(sent, config_dir, monkeypatch, capsys):
+    dev = devinfo(DEVICES[0][0])
+    state = {"n": 0}
+
+    def sleep(_):
+        state["n"] += 1
+        if state["n"] == 2:
+            vrgb.cmd_brightness(vrgb.load_config(), dev, 20)
+        if state["n"] == 4:
+            vrgb.cmd_auto(vrgb.load_config(), dev, "on")
+
+    monkeypatch.setattr(vrgb.time, "sleep", sleep)
+    vrgb.cmd_cycle(vrgb.load_config(), dev, 80, 4, 20)
+    color_frames = [p for _, rid, p in sent if rid == dev["color_report_id"]]
+    assert color_frames[-1][8] == vrgb.percent_to_intensity(20)
+    assert sent[-1][2] == bytes([vrgb.FIRMWARE_BYTE])  # auto's firmware mode re-applied last
+
+
+def test_newer_cycle_takes_over(sent, config_dir, monkeypatch, capsys):
+    def newer():
+        cfg = vrgb.load_config()
+        cfg["cycle"]["pid"] = -1
+        vrgb.save_config(cfg)
+
+    run_cycle_until(monkeypatch, newer)
+    assert vrgb.load_config()["cycle"]["pid"] == -1
+
+
+def test_ctrl_c_stops_cycle_for_good(sent, config_dir, monkeypatch, capsys):
+    def interrupt():
+        raise KeyboardInterrupt
+
+    run_cycle_until(monkeypatch, interrupt)
+    assert "cycle" not in vrgb.load_config()

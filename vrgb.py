@@ -263,6 +263,9 @@ def save_config(cfg):
 #   last_on_percent  -> last known non-zero brightness for restore behavior
 #   autonomous       -> whether firmware/autonomous mode should be preserved
 #   profiles         -> named snapshots of color / percent / autonomous
+#   cycle            -> {period, fps, pid} while the software rainbow is the saved
+#                       mode; `restore` resumes it. Commands that set another
+#                       mode remove it; `off` and `brightness` keep it.
 
 def get_saved_static_state(cfg):
     r, g, b = hex_to_rgb(cfg["color"])
@@ -598,6 +601,7 @@ def apply_profile(cfg, devinfo, profile, save=True):
 
     debug(f"apply_profile color={color} percent={percent} autonomous={autonomous}")
 
+    cfg.pop("cycle", None)
     cfg["color"] = color
     cfg["percent"] = percent
     if percent > 0:
@@ -715,7 +719,11 @@ def cmd_status(cfg, devinfo):
     print("Saved color:", "#" + cfg["color"])
     print("Saved brightness:", cfg["percent"], "%")
     print("Last-on brightness:", cfg["last_on_percent"], "%")
-    print("Saved mode:", "firmware/autonomous" if cfg["autonomous"] else "host/static")
+    cycle = cfg.get("cycle")
+    if isinstance(cycle, dict):
+        print(f"Saved mode: rainbow cycle (period={cycle.get('period')}s, {cycle.get('fps')} fps)")
+    else:
+        print("Saved mode:", "firmware/autonomous" if cfg["autonomous"] else "host/static")
     debug("status complete")
 
 
@@ -732,6 +740,7 @@ def cmd_set(cfg, devinfo, color, percent=None):
     set_firmware_mode(devinfo, False)
     set_color(devinfo, r, g, b, intensity)
 
+    cfg.pop("cycle", None)
     cfg["color"] = color.replace("#", "").lower()
     cfg["percent"] = percent
     if percent > 0:
@@ -747,6 +756,14 @@ def cmd_brightness(cfg, devinfo, percent):
     intensity = percent_to_intensity(percent)
     debug(f"cmd_brightness percent={percent} intensity={intensity}")
 
+    if cfg.get("cycle"):
+        # A running cycle picks the new brightness up from the config.
+        cfg["percent"] = percent
+        if percent > 0:
+            cfg["last_on_percent"] = percent
+        save_config(cfg)
+        return
+
     set_firmware_mode(devinfo, False)
     set_color(devinfo, r, g, b, intensity)
 
@@ -760,6 +777,7 @@ def cmd_brightness(cfg, devinfo, percent):
 def cmd_auto(cfg, devinfo, state):
     firmware_on = state == "on"
     debug(f"cmd_auto state={state}")
+    cfg.pop("cycle", None)
 
     if firmware_on:
         set_firmware_mode(devinfo, True)
@@ -778,6 +796,7 @@ def cmd_auto(cfg, devinfo, state):
 def cmd_rainbow(cfg, devinfo, state):
     enable = state == "on"
     debug(f"cmd_rainbow state={state}")
+    cfg.pop("cycle", None)
 
     if not devinfo.get("rainbow_supported", False):
         if enable:
@@ -815,16 +834,43 @@ def cmd_rainbow(cfg, devinfo, state):
         save_config(cfg)
 
 
+def owns_cycle(cfg):
+    cycle = cfg.get("cycle")
+    return isinstance(cycle, dict) and cycle.get("pid") == os.getpid() and cfg["percent"] > 0
+
+
+def config_stamp():
+    # Every save replaces the file, so a new inode marks a write even within one mtime tick.
+    try:
+        st = CONFIG_FILE.stat()
+        return st.st_ino, st.st_mtime_ns
+    except FileNotFoundError:
+        return None
+
+
+def hand_over(cfg, devinfo):
+    """Re-apply the state another command saved: this process's last frame may
+    have reached the keyboard after that command's own write."""
+    cycle = cfg.get("cycle")
+    if isinstance(cycle, dict) and cfg["percent"] > 0:
+        return  # a newer cycle drives the keyboard now
+    if cfg["autonomous"]:
+        set_firmware_mode(devinfo, True)
+    else:
+        r, g, b = hex_to_rgb(cfg["color"])
+        set_firmware_mode(devinfo, False)
+        set_color(devinfo, r, g, b, percent_to_intensity(cfg["percent"]))
+
+
 def cmd_cycle(cfg, devinfo, percent=None, period=None, fps=None):
     if percent is None:
-        percent = cfg["percent"]
+        percent = cfg["percent"] or cfg["last_on_percent"]
     if period is None:
         period = 6.0
     if fps is None:
         fps = 20.0
 
     percent = clamp(int(percent), 0, 100)
-    intensity = percent_to_intensity(percent)
 
     try:
         period = float(period)
@@ -832,12 +878,23 @@ def cmd_cycle(cfg, devinfo, percent=None, period=None, fps=None):
     except (TypeError, ValueError):
         die("period and fps must be numbers")
 
+    if percent <= 0:
+        die("percent must be greater than 0")
     if period <= 0:
         die("period must be greater than 0")
     if fps <= 0:
         die("fps must be greater than 0")
 
     debug(f"cmd_cycle percent={percent} period={period} fps={fps}")
+
+    # Saving the cycle makes it the restored mode, and tells an older cycle
+    # process (whose pid no longer matches) to stop.
+    cfg["cycle"] = {"period": period, "fps": fps, "pid": os.getpid()}
+    cfg["percent"] = percent
+    cfg["last_on_percent"] = percent
+    cfg["autonomous"] = False
+    save_config(cfg)
+    stamp = config_stamp()
 
     print(f"Cycling through the color spectrum (period={period}s, {fps} fps). Press Ctrl+C to stop.")
 
@@ -847,10 +904,17 @@ def cmd_cycle(cfg, devinfo, percent=None, period=None, fps=None):
     try:
         set_firmware_mode(devinfo, False)
         while True:
+            if config_stamp() != stamp:
+                stamp = config_stamp()
+                cfg = load_config()
+                if not owns_cycle(cfg):
+                    debug("cmd_cycle config changed by another command; stopping")
+                    hand_over(cfg, devinfo)
+                    return
             try:
                 hue = ((time.monotonic() - start) / period) % 1.0
                 r, g, b = (round(c * 255) for c in colorsys.hsv_to_rgb(hue, 1.0, 1.0))
-                set_color(devinfo, r, g, b, intensity)
+                set_color(devinfo, r, g, b, percent_to_intensity(cfg["percent"]))
             except OSError as e:
                 # The hidraw node can briefly disappear or re-enumerate
                 # around suspend/resume; reacquire it and keep cycling.
@@ -861,6 +925,11 @@ def cmd_cycle(cfg, devinfo, percent=None, period=None, fps=None):
                 continue
             time.sleep(frame_delay)
     except KeyboardInterrupt:
+        # Ctrl+C is a deliberate stop, so the cycle is not resumed at the next login.
+        cfg = load_config()
+        if owns_cycle(cfg):
+            cfg.pop("cycle")
+            save_config(cfg)
         print("\nStopped cycling.")
 
 
@@ -994,7 +1063,12 @@ Example: vrgb --debug status
 
     elif cmd == "restore":
         devinfo = find_device()
-        cmd_restore(cfg, devinfo)
+        cycle = cfg.get("cycle")
+        if isinstance(cycle, dict):
+            p = get_saved_static_state(cfg)[3]
+            cmd_cycle(cfg, devinfo, p, cycle.get("period"), cycle.get("fps"))
+        else:
+            cmd_restore(cfg, devinfo)
 
     elif cmd == "profile":
         if len(args) < 2:
