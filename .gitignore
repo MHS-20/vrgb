@@ -20,3 +20,8 @@ __pycache__/
 
 # Tests
 .pytest_cache/
+
+# Release build
+dist/
+build/
+*.egg-info/

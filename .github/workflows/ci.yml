@@ -1,10 +1,15 @@
-name: CI
+name: CI / Release
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: write        # create tags & GitHub releases
+  issues: write          # semantic-release can comment on issues
+  pull-requests: write   # semantic-release can comment on PRs
 
 jobs:
   test:
@@ -36,3 +41,31 @@ jobs:
           test "$core" = "$suite"
       - name: shellcheck
         run: shellcheck -S warning install.sh uninstall.sh
+
+  # Commits that are not Conventional Commits are ignored by the analyzer; when no
+  # commit since the last tag warrants a release, this job succeeds without one.
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    needs: [test, lint]
+    if: github.event_name == 'push'
+    outputs:
+      released: ${{ steps.semrel.outputs.new_release_published }}
+      version: ${{ steps.semrel.outputs.new_release_version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Run semantic-release
+        id: semrel
+        uses: cycjimmy/semantic-release-action@v6
+        with:
+          extra_plugins: |
+            @semantic-release/exec
+            conventional-changelog-conventionalcommits
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
