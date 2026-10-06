@@ -11,9 +11,9 @@ VRGB controls RGB on ASUS Vivobook keyboards that expose the ITE5570 HID LampArr
 
 ## Commands
 
-There is no test suite, linter, or build step.
-
 ```sh
+pytest                                         # tests (pytest config in pyproject.toml; no hardware needed)
+pytest tests/test_core.py -k find_device       # single test / subset
 python3 vrgb.py --debug status                 # run Core from checkout (needs hidraw access: `vrgb` group or sudo)
 PYTHONPATH=.:suite python3 -m vrgb_suite       # run Suite from checkout without installing
 ./install.sh [core|suite]                      # copies vrgb.py -> /usr/local/bin/vrgb, udev rule, vrgb group, optional autostart
@@ -40,6 +40,7 @@ PYTHONPATH=.:suite python3 -m vrgb_suite       # run Suite from checkout without
 
 ## Conventions
 
-- Version lives in both `vrgb.VERSION` and `vrgb_suite.__version__`; they are released together — bump both.
-- `releases/` holds frozen copies of past `vrgb.py` versions; don't edit them.
+- Releases are automated by semantic-release (`.releaserc.json`, `.github/workflows/ci.yml`) from Conventional Commit messages; `scripts/build-release.sh` stamps the version into `vrgb.VERSION` and `vrgb_suite.__version__` and builds the release assets. Don't bump versions by hand.
+- New devices: add the mapping, pin its bytes in `test_verified_device_bytes`, and list it in the README (see CONTRIBUTING.md).
+- `releases/` holds frozen copies of `vrgb.py` up to v0.3.5; newer versions are GitHub release assets. Don't edit them.
 - `packaging/` (udev rule, sysusers) and `systemd/`/`suite/data/` units are installed by `install.sh`; keep `uninstall.sh` symmetric when changing either.

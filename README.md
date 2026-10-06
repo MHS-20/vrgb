@@ -2,6 +2,8 @@
   <img src="assets/vrgblogodark.png" width="500"><br>
   <br>
   RGB control for ASUS Vivobook HID LampArray keyboards on Linux<br>
+  <br>
+  <a href="https://github.com/vrgb-dev/vrgb/actions/workflows/ci.yml"><img src="https://github.com/vrgb-dev/vrgb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
 
@@ -62,7 +64,7 @@ Unlike some RGB tools, VRGB does not rely on kernel patches, vendor utilities, b
        ↓
     RGB lighting
 
-Current Stable Release: v0.3.5
+Current Stable Release: see [Releases](https://github.com/vrgb-dev/vrgb/releases)
     
 
 ## Example Usage
@@ -460,50 +462,13 @@ With future updates in mind, this project will aim to continue to be as efficien
 
 ## Changelog
 
-v0.3.5
+See [CHANGELOG.md](CHANGELOG.md) and [GitHub Releases](https://github.com/vrgb-dev/vrgb/releases).
 
-- refined shared Vivobook S-series ITE5570 device mappings
-- added ASUS Vivobook S14 M5406WA to community validated hardware
-- added required kernel module checks for affected ITE5570 systems
-- improved OEM rainbow capability handling for unsupported WMI paths
-- updated status output with confirmed models, required modules, and rainbow support
-- preserved the no-daemon, direct-HID design
 
-v0.3.1
 
-- introduced multi-device support architecture
-- replaced hardcoded HID targeting with device mappings
-- added support for ITE5570 (0x5570) devices
-- confirmed working on additional Vivobook S16 hardware (community tested)
-- refactored device detection to return structured device info
-- eliminated global report ID assumptions
-- no behavioral changes for existing supported devices
+## Contributing
 
-v0.3
-
--    added named profile support
--    profile save/load/list/delete commands
--    profile data stored in config.json
--    profile load applies immediately to hardware
--    non-HID commands no longer require device detection
-
-v0.2.2
-
--   improved CLI help output
--   installer/Uninstaller validation
--   confirmed non-root HID access
--   release packaging
-
-v0.2.0
-
--   automatic hidraw detection
--   debug mode
--   persistent config
--   installer script
-
-v0.1
-
-Initial prototype with static RGB and brightness control.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 
 
