@@ -1,0 +1,15 @@
+[Unit]
+Description=VRGB Suite tray (restores lighting at login, idle auto-off, daytime-off)
+Documentation=https://github.com/vrgb-dev/vrgb
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=vrgb-gui --tray
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
