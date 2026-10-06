@@ -364,3 +364,10 @@ def test_ctrl_c_stops_cycle_for_good(sent, config_dir, monkeypatch, capsys):
 
     run_cycle_until(monkeypatch, interrupt)
     assert "cycle" not in vrgb.load_config()
+
+
+def test_oem_rainbow_without_root_asks_for_sudo(monkeypatch, capsys):
+    monkeypatch.setattr(vrgb.os, "geteuid", lambda: 1000)
+    with pytest.raises(SystemExit):
+        vrgb.asus_wmi_rainbow(True)
+    assert "sudo" in capsys.readouterr().err

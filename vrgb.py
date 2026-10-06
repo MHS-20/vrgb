@@ -557,6 +557,11 @@ def asus_wmi_write(method_id: str, dev_id: str, ctrl_param: str):
 def asus_wmi_rainbow(enable: bool):
     debug(f"asus_wmi_rainbow enable={enable}")
 
+    # debugfs is root-only (0700); checked first because Path.exists() reports a
+    # permission error as a missing path on newer Pythons.
+    if os.geteuid() != 0:
+        die("OEM rainbow requires root: run `sudo vrgb rainbow on|off`.")
+
     if not ASUS_WMI_BASE.exists():
         die("OEM rainbow not supported on this system.")
 
