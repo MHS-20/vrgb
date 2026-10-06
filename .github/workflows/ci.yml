@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: write        # create tags & GitHub releases
-  issues: write          # semantic-release can comment on issues
-  pull-requests: write   # semantic-release can comment on PRs
 
 jobs:
   test:
