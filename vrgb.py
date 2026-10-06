@@ -7,6 +7,7 @@ import fcntl
 import pwd
 import time
 import colorsys
+import subprocess
 from pathlib import Path
 
 # ===== Debug =====
@@ -867,7 +868,32 @@ def hand_over(cfg, devinfo):
         set_color(devinfo, r, g, b, percent_to_intensity(cfg["percent"]))
 
 
+RESTORE_SERVICE = "vrgb-restore.service"
+# `vrgb rainbow` with no argument: the software cycle at these settings.
+RAINBOW_PERCENT = 100
+RAINBOW_PERIOD = 4
+
+
 def cmd_cycle(cfg, devinfo, percent=None, period=None, fps=None):
+    save_cycle(cfg, percent, period, fps)
+    run_cycle(cfg, devinfo)
+
+
+def start_cycle_service():
+    """Hand the saved cycle to the user's restore service, so it keeps running
+    without a terminal. Returns False when that service is not enabled."""
+    try:
+        enabled = subprocess.run(
+            ["systemctl", "--user", "--quiet", "is-enabled", RESTORE_SERVICE]
+        ).returncode == 0
+        if not enabled:
+            return False
+        return subprocess.run(["systemctl", "--user", "restart", RESTORE_SERVICE]).returncode == 0
+    except OSError:  # no systemctl
+        return False
+
+
+def save_cycle(cfg, percent=None, period=None, fps=None):
     if percent is None:
         percent = cfg["percent"] or cfg["last_on_percent"]
     if period is None:
@@ -899,6 +925,10 @@ def cmd_cycle(cfg, devinfo, percent=None, period=None, fps=None):
     cfg["last_on_percent"] = percent
     cfg["autonomous"] = False
     save_config(cfg)
+
+
+def run_cycle(cfg, devinfo):
+    period, fps = cfg["cycle"]["period"], cfg["cycle"]["fps"]
     stamp = config_stamp()
 
     print(f"Cycling through the color spectrum (period={period}s, {fps} fps). Press Ctrl+C to stop.")
@@ -990,7 +1020,8 @@ def main():
   vrgb set RRGGBB [percent]
   vrgb brightness 0-100
   vrgb auto on|off
-  vrgb rainbow on|off
+  vrgb rainbow             (software rainbow: cycle 100 4)
+  vrgb rainbow on|off      (OEM firmware rainbow, sudo)
   vrgb cycle [percent] [period_seconds] [fps]
   vrgb off
   vrgb restore
@@ -1049,18 +1080,25 @@ Example: vrgb --debug status
         devinfo = find_device()
         cmd_auto(cfg, devinfo, args[1])
 
+    elif cmd == "cycle" or args == ["rainbow"]:
+        devinfo = find_device()
+        if cmd == "rainbow":
+            percent, period, fps = RAINBOW_PERCENT, RAINBOW_PERIOD, None
+        else:
+            percent = args[1] if len(args) > 1 else None
+            period = args[2] if len(args) > 2 else None
+            fps = args[3] if len(args) > 3 else None
+        save_cycle(cfg, percent, period, fps)
+        if start_cycle_service():
+            print(f"Rainbow cycle running in the background ({RESTORE_SERVICE}).")
+        else:
+            run_cycle(cfg, devinfo)
+
     elif cmd == "rainbow":
         if len(args) < 2 or args[1] not in ["on", "off"]:
-            die("rainbow requires 'on' or 'off'")
+            die("rainbow requires 'on' or 'off' (OEM), or no argument (software rainbow)")
         devinfo = find_device()
         cmd_rainbow(cfg, devinfo, args[1])
-
-    elif cmd == "cycle":
-        devinfo = find_device()
-        percent = args[1] if len(args) > 1 else None
-        period = args[2] if len(args) > 2 else None
-        fps = args[3] if len(args) > 3 else None
-        cmd_cycle(cfg, devinfo, percent, period, fps)
 
     elif cmd == "off":
         devinfo = find_device()

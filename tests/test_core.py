@@ -371,3 +371,41 @@ def test_oem_rainbow_without_root_asks_for_sudo(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         vrgb.asus_wmi_rainbow(True)
     assert "sudo" in capsys.readouterr().err
+
+
+def fake_systemctl(monkeypatch, enabled):
+    calls = []
+
+    def run(cmd):
+        calls.append(cmd[2:])
+        return type("Result", (), {"returncode": 0 if enabled else 1})()
+
+    monkeypatch.setattr(vrgb.subprocess, "run", run)
+    return calls
+
+
+def test_cycle_hands_over_to_enabled_restore_service(sent, config_dir, monkeypatch, capsys):
+    calls = fake_systemctl(monkeypatch, enabled=True)
+    monkeypatch.setattr(vrgb, "find_device", lambda: devinfo(DEVICES[0][0]))
+    monkeypatch.setattr(vrgb.sys, "argv", ["vrgb", "cycle", "60", "8"])
+    vrgb.main()
+    assert calls[-1] == ["restart", vrgb.RESTORE_SERVICE]
+    assert sent == []  # the service drives the keyboard, not this process
+    cfg = vrgb.load_config()
+    assert (cfg["percent"], cfg["cycle"]["period"]) == (60, 8.0)
+
+
+def test_rainbow_without_argument_is_cycle_100_4(sent, config_dir, monkeypatch, capsys):
+    fake_systemctl(monkeypatch, enabled=False)
+    dev = devinfo(DEVICES[0][0])
+    monkeypatch.setattr(vrgb, "find_device", lambda: dev)
+    monkeypatch.setattr(vrgb.sys, "argv", ["vrgb", "rainbow"])
+    seen = {}
+
+    def stop():
+        seen.update(vrgb.load_config())
+        vrgb.cmd_set(vrgb.load_config(), dev, "000000", 10)
+
+    run_cycle_until(monkeypatch, stop, start=vrgb.main)
+    assert seen["percent"] == 100
+    assert (seen["cycle"]["period"], seen["cycle"]["fps"]) == (4.0, 20.0)

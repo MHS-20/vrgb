@@ -312,7 +312,12 @@ OEM Rainbow Mode (requires sudo)
     sudo vrgb rainbow on
     sudo vrgb rainbow off
 
-Software Rainbow Cycle (no sudo, works on all supported devices)
+Software Rainbow (no sudo, works on all supported devices)
+
+    vrgb rainbow
+
+This is the software rainbow at full brightness, one full color spectrum every
+4 seconds: a shortcut for `vrgb cycle 100 4`. For other settings:
 
     vrgb cycle [percent] [period_seconds] [fps]
 
@@ -320,10 +325,12 @@ Software Rainbow Cycle (no sudo, works on all supported devices)
 
     vrgb cycle 100 4
 
-Unlike `rainbow`, this does not depend on OEM firmware support and gives full
-control over speed and brightness. It runs in the foreground and is saved as the
-current mode, so `vrgb restore` (and the autostart restore options below) resume
-it after a logout or reboot.
+Unlike the OEM `rainbow on`, this does not depend on firmware support and gives
+full control over speed and brightness. It is saved as the current mode, so
+`vrgb restore` (and the autostart restore options below) resume it after a logout
+or reboot. When the systemd restore service is enabled, `vrgb rainbow` and
+`vrgb cycle` hand the cycle to it and return immediately; otherwise they run in
+the foreground.
 
 While it runs, other commands take over cleanly: `set`, `auto`, `rainbow` or
 loading a profile stop the cycle and replace it, `brightness` changes the cycle's
