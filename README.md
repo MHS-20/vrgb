@@ -98,6 +98,8 @@ VRGB supports ASUS laptops that expose the **ITE5570 HID LampArray controller**.
 
 Support is based on **verified device mappings**, not specific laptop models. Some ASUS laptops share the same HID controller and report IDs across different screen sizes and CPU platforms.
 
+The firmware and color report IDs are the standard HID LampArray `LampArrayControlReport` and `LampRangeUpdateReport`. VRGB reads them from the device's HID report descriptor at runtime; the IDs listed below are what the verified devices declare, and are used as a fallback if the descriptor cannot be read.
+
 ### Verified mappings
 
 **ITE5570 (HID_ID: 0018:00000B05:000019B6)**  
@@ -127,11 +129,11 @@ Support is based on **verified device mappings**, not specific laptop models. So
 
 ## Compatibility
 
-VRGB scans available `hidraw` devices and selects compatible ASUS keyboard controllers automatically.
+VRGB scans available `hidraw` devices and selects compatible ASUS keyboard controllers automatically. Verified devices are preferred. Any other device whose HID report descriptor declares a LampArray (usage page `0x59`) is also detected and controlled through its standard reports, lighting all of its lamps with one color; `vrgb status` marks it as unverified.
 
 Multiple ASUS laptops appear to share the same ITE5570 controller and HID LampArray protocol. If your system exposes a similar device, there is a strong chance VRGB will work.
 
-Support expands through **verified device mappings** as new hardware is tested. Stability and correctness are prioritized over broad but unreliable compatibility.
+Support expands through **verified device mappings** as new hardware is tested: a verified mapping adds known models, required kernel modules and OEM rainbow support, which a descriptor cannot describe. Stability and correctness are prioritized over broad but unreliable compatibility.
 
 ### Required modules
 

@@ -41,7 +41,7 @@ Commits that do not follow the format do not fail CI; they are simply ignored wh
 
 ## Adding a new device
 
-Support grows through verified hardware, so a new mapping needs a report from someone who has tested it on a real laptop.
+VRGB already drives any HID LampArray keyboard it finds, reading the report IDs from the device's report descriptor; `vrgb status` shows such a device as unverified. A verified mapping adds what the descriptor cannot tell: the confirmed models, required kernel modules, and OEM rainbow support. It needs a report from someone who has tested it on a real laptop.
 
 1. Collect the device identifiers:
 
@@ -50,8 +50,8 @@ Support grows through verified hardware, so a new mapping needs a report from so
    vrgb --debug status
    ```
 
-2. Add an entry to `SUPPORTED_DEVICES` in `vrgb.py` with the firmware and color report IDs, the confirmed models, and any required kernel modules.
-3. Add the device's exact report bytes to `test_verified_device_bytes` in `tests/test_core.py`. The table-driven tests cover the new entry automatically.
+2. Add an entry to `SUPPORTED_DEVICES` in `vrgb.py` with the firmware and color report IDs printed by `vrgb --debug status`, the confirmed models, and any required kernel modules.
+3. Add the device's exact report bytes to `test_verified_device_bytes` in `tests/test_core.py`. The table-driven tests cover the new entry automatically. If you can, also add its descriptor (`/sys/class/hidraw/hidrawN/device/report_descriptor`) to `tests/data/` with a parser test.
 4. List it under "Verified mappings" in `README.md`.
 
 ## Reporting hardware results

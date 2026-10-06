@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -104,10 +105,12 @@ def test_percent_to_intensity(percent, intensity):
 # ===== Device discovery =====
 
 
-def fake_hidraw(root, entries):
+def fake_hidraw(root, entries, descriptors=None):
     for name, uevent in entries.items():
         (root / name / "device").mkdir(parents=True)
         (root / name / "device" / "uevent").write_text(uevent)
+    for name, descriptor in (descriptors or {}).items():
+        (root / name / "device" / "report_descriptor").write_bytes(descriptor)
 
 
 @pytest.fixture
@@ -137,6 +140,78 @@ def test_find_device_none(hidraw):
     fake_hidraw(hidraw, {"hidraw0": "HID_ID=0003:0000046D:0000C52B\nHID_NAME=Mouse\n"})
     with pytest.raises(SystemExit):
         vrgb.find_device()
+
+
+ITE5570_19B6_DESCRIPTOR = (Path(__file__).parent / "data" / "ite5570_19b6.desc").read_bytes()
+
+
+def test_parse_real_ite5570_descriptor():
+    ids = vrgb.parse_lamparray_report_ids(ITE5570_19B6_DESCRIPTOR)
+    assert ids[vrgb.LAMPARRAY_ATTRIBUTES_REPORT] == 0x01
+    assert ids[vrgb.LAMPARRAY_RANGE_UPDATE_REPORT] == 0x05
+    assert ids[vrgb.LAMPARRAY_CONTROL_REPORT] == 0x0B
+
+
+def test_parse_report_id_inside_collection():
+    descriptor = bytes([
+        0x05, 0x59,        # Usage Page (LampArray)
+        0x09, 0x01,        # Usage (LampArray)
+        0xA1, 0x01,        # Collection (Application)
+        0x09, 0x60,        #   Usage (LampRangeUpdateReport)
+        0xA1, 0x02,        #   Collection (Logical)
+        0x85, 0x45,        #     Report ID (0x45)
+        0x09, 0x55,        #     Usage (LampUpdateFlags)
+        0xB1, 0x02,        #     Feature
+        0xC0,              #   End Collection
+        0xC0,              # End Collection
+    ])
+    assert vrgb.parse_lamparray_report_ids(descriptor)[vrgb.LAMPARRAY_RANGE_UPDATE_REPORT] == 0x45
+
+
+def test_parse_ignores_other_usage_pages():
+    descriptor = bytes([0x06, 0x30, 0xFF, 0x09, 0x60, 0xA1, 0x01, 0x85, 0x05, 0xB1, 0x02, 0xC0])
+    assert vrgb.parse_lamparray_report_ids(descriptor) == {}
+
+
+def test_find_device_reads_report_ids_from_descriptor(hidraw):
+    fake_hidraw(
+        hidraw,
+        {"hidraw0": "HID_ID=0018:00000B05:000019B6\nHID_NAME=ITE5570:00 0B05:19B6\n"},
+        {"hidraw0": ITE5570_19B6_DESCRIPTOR},
+    )
+    dev = vrgb.find_device()
+    assert (dev["firmware_report_id"], dev["color_report_id"], dev["verified"]) == (0x0B, 0x05, True)
+    assert "lamp_id_end" not in dev
+
+
+def test_find_device_detects_unlisted_lamparray(hidraw, monkeypatch):
+    monkeypatch.setattr(vrgb, "get_lamp_count", lambda devinfo: 4)
+    fake_hidraw(
+        hidraw,
+        {"hidraw0": "HID_ID=0018:00001234:00005678\nHID_NAME=Other Keyboard\n"},
+        {"hidraw0": ITE5570_19B6_DESCRIPTOR},
+    )
+    dev = vrgb.find_device()
+    assert dev["verified"] is False
+    assert (dev["color_report_id"], dev["lamp_id_end"]) == (0x05, 3)
+
+
+def test_find_device_prefers_verified_over_generic(hidraw, monkeypatch):
+    monkeypatch.setattr(vrgb, "get_lamp_count", lambda devinfo: 1)
+    fake_hidraw(
+        hidraw,
+        {
+            "hidraw0": "HID_ID=0018:00001234:00005678\nHID_NAME=Other Keyboard\n",
+            "hidraw1": "HID_ID=0018:00000B05:00005570\nHID_NAME=ITE5570:00 0B05:5570\n",
+        },
+        {"hidraw0": ITE5570_19B6_DESCRIPTOR},
+    )
+    assert vrgb.find_device()["path"] == "/dev/hidraw1"
+
+
+def test_set_color_lamp_range(sent):
+    vrgb.set_color({"path": "p", "color_report_id": 5, "lamp_id_end": 0x0102}, 1, 2, 3, 4)
+    assert sent[0][2] == bytes.fromhex("010000" "0201" "01020304")
 
 
 # ===== Config =====

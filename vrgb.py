@@ -24,8 +24,15 @@ def debug(msg):
 HIDIOCSFEATURE_BASE = 0xC0004806
 
 
+HIDIOCGFEATURE_BASE = 0xC0004807
+
+
 def HIDIOCSFEATURE(length: int) -> int:
     return HIDIOCSFEATURE_BASE | (length << 16)
+
+
+def HIDIOCGFEATURE(length: int) -> int:
+    return HIDIOCGFEATURE_BASE | (length << 16)
 
 
 def get_real_home() -> Path:
@@ -52,6 +59,9 @@ def get_real_home() -> Path:
 CONFIG_DIR = get_real_home() / ".config" / "vrgb"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
+# Verified devices. Report IDs are read from each device's HID report descriptor;
+# the IDs here are the fallback when the descriptor cannot be read, and the
+# remaining fields carry what a descriptor cannot tell (models, modules, rainbow).
 SUPPORTED_DEVICES = {
     "0018:00000B05:000019B6": {
         "hid_name": "ITE5570:00 0B05:19B6",
@@ -77,6 +87,12 @@ SUPPORTED_DEVICES = {
         "rainbow_supported": False,
     },
 }
+
+# HID LampArray usage page (0x59) and the report usages VRGB talks to.
+LAMPARRAY_USAGE_PAGE = 0x59
+LAMPARRAY_ATTRIBUTES_REPORT = 0x02
+LAMPARRAY_RANGE_UPDATE_REPORT = 0x60
+LAMPARRAY_CONTROL_REPORT = 0x70
 
 HOST_BYTE = 0x00
 FIRMWARE_BYTE = 0x01
@@ -332,6 +348,7 @@ def find_device():
         score = -1
         reason = "no match"
         profile = None
+        report_ids = read_lamparray_report_ids(dev)
 
         if hid_id in SUPPORTED_DEVICES:
             profile = SUPPORTED_DEVICES[hid_id]
@@ -344,6 +361,15 @@ def find_device():
                     score = 90
                     reason = f"exact HID_NAME match ({supported_hid_id})"
                     break
+
+        if profile is None and {
+            LAMPARRAY_RANGE_UPDATE_REPORT,
+            LAMPARRAY_CONTROL_REPORT,
+            LAMPARRAY_ATTRIBUTES_REPORT,
+        } <= report_ids.keys():
+            profile = {"model": f"Unverified HID LampArray device ({hid_name})"}
+            score = 50
+            reason = "HID LampArray report descriptor"
 
         debug(
             f"{dev.name}: hid_id={hid_id} hid_name={hid_name} "
@@ -359,8 +385,14 @@ def find_device():
                 "hid_name": hid_name,
                 "model": profile["model"],
                 "confirmed_models": profile.get("confirmed_models", []),
-                "firmware_report_id": profile["firmware_report_id"],
-                "color_report_id": profile["color_report_id"],
+                "firmware_report_id": report_ids.get(
+                    LAMPARRAY_CONTROL_REPORT, profile.get("firmware_report_id")
+                ),
+                "color_report_id": report_ids.get(
+                    LAMPARRAY_RANGE_UPDATE_REPORT, profile.get("color_report_id")
+                ),
+                "attributes_report_id": report_ids.get(LAMPARRAY_ATTRIBUTES_REPORT),
+                "verified": score >= 90,
                 "rainbow_supported": profile.get("rainbow_supported", False),
                 "required_modules": profile.get("required_modules", []),
             }
@@ -376,9 +408,88 @@ def find_device():
         if best_match.get("required_modules"):
             debug("Required modules: " + ", ".join(best_match["required_modules"]))
         ensure_required_modules(best_match)
+        if not best_match["verified"]:
+            # Verified devices keep their tested lamp range; others light every lamp.
+            best_match["lamp_id_end"] = max(get_lamp_count(best_match) - 1, 0)
         return best_match
 
     die("VRGB HID device not found")
+
+
+def parse_lamparray_report_ids(descriptor):
+    """Map LampArray report usages to report IDs in a HID report descriptor.
+
+    A report's ID is the Report ID in effect at the first main item inside its
+    collection, which holds whether the descriptor declares it before or after
+    the collection's Usage.
+    """
+    ids = {}
+    usage_page = report_id = 0
+    usages = []       # local Usage items since the last main item
+    collections = []  # (page, usage) of each open collection
+    pos = 0
+
+    while pos < len(descriptor):
+        prefix = descriptor[pos]
+        if prefix == 0xFE:  # long item: data size in the next byte
+            pos += 3 + (descriptor[pos + 1] if pos + 1 < len(descriptor) else 0)
+            continue
+        size = (0, 1, 2, 4)[prefix & 0x03]
+        value = int.from_bytes(descriptor[pos + 1 : pos + 1 + size], "little")
+        tag = prefix & 0xFC
+        pos += 1 + size
+
+        if tag == 0x04:    # Usage Page
+            usage_page = value
+        elif tag == 0x84:  # Report ID
+            report_id = value
+        elif tag == 0x08:  # Usage (a 4-byte usage carries its own page)
+            usages.append((value >> 16, value & 0xFFFF) if size == 4 else (usage_page, value))
+        elif tag == 0xA0:  # Collection
+            collections.append(usages[-1] if usages else None)
+            usages = []
+        elif tag == 0xC0:  # End Collection
+            if collections:
+                collections.pop()
+        elif tag in (0x80, 0x90, 0xB0):  # Input / Output / Feature
+            for entry in collections:
+                if entry and entry[0] == LAMPARRAY_USAGE_PAGE and report_id:
+                    ids.setdefault(entry[1], report_id)
+            usages = []
+
+    return ids
+
+
+def read_lamparray_report_ids(hidraw_dir):
+    try:
+        descriptor = (hidraw_dir / "device" / "report_descriptor").read_bytes()
+    except OSError as e:
+        debug(f"{hidraw_dir.name}: cannot read report descriptor: {e}")
+        return {}
+    return parse_lamparray_report_ids(descriptor)
+
+
+def hid_get_feature(dev_path, report_id, length):
+    buf = bytearray(length + 1)
+    buf[0] = report_id
+    fd = os.open(dev_path, os.O_RDWR | os.O_CLOEXEC)
+    try:
+        fcntl.ioctl(fd, HIDIOCGFEATURE(len(buf)), buf)
+    finally:
+        os.close(fd)
+    debug(f"hid_get_feature dev={dev_path} report=0x{report_id:02X} data={buf[1:].hex()}")
+    return bytes(buf[1:])
+
+
+def get_lamp_count(devinfo):
+    # LampArrayAttributesReport starts with LampCount (uint16, little-endian).
+    try:
+        data = hid_get_feature(devinfo["path"], devinfo["attributes_report_id"], 22)
+    except PermissionError:
+        die(f"Permission denied opening {devinfo['path']} (are you in the vrgb group?)")
+    except OSError as e:
+        die(f"Could not read LampArray attributes from {devinfo['path']}: {e}")
+    return int.from_bytes(data[:2], "little")
 
 
 def hid_set_feature(dev_path, report_id, payload_bytes):
@@ -406,13 +517,15 @@ def set_firmware_mode(devinfo, enabled: bool):
 def set_color(devinfo, r, g, b, intensity):
     debug(f"set_color r={r} g={g} b={b} intensity={intensity}")
 
+    # LampRangeUpdateReport: flags (update complete), LampIdStart, LampIdEnd, RGBI.
+    lamp_id_end = devinfo.get("lamp_id_end", 0)
     payload = bytes(
         [
             0x01,
             0x00,
             0x00,
-            0x00,
-            0x00,
+            lamp_id_end & 0xFF,
+            lamp_id_end >> 8,
             clamp(r, 0, 255),
             clamp(g, 0, 255),
             clamp(b, 0, 255),
@@ -583,6 +696,8 @@ def cmd_status(cfg, devinfo):
     print("Device:", devinfo["path"])
     print("Model:", devinfo["model"])
     print("HID ID:", devinfo["hid_id"])
+    if not devinfo.get("verified", True):
+        print("Verified: no (detected from its HID LampArray descriptor; please report results)")
 
     confirmed_models = devinfo.get("confirmed_models", [])
     if confirmed_models:

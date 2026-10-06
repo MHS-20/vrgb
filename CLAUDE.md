@@ -25,8 +25,9 @@ PYTHONPATH=.:suite python3 -m vrgb_suite       # run Suite from checkout without
 ## Architecture
 
 **Core (`vrgb.py`)**
-- `SUPPORTED_DEVICES` maps HID_ID → firmware/color report IDs, `rainbow_supported`, `required_modules`. Adding hardware support = adding a verified mapping here (and in README's "Verified mappings").
-- `find_device()` scans hidraw nodes and matches against that table; `hid_set_feature()` issues `HIDIOCSFEATURE` ioctls; `set_color()` / `set_firmware_mode()` build the reports.
+- The protocol is standard HID LampArray: the "firmware report" is `LampArrayControlReport` (autonomous mode), the "color report" is `LampRangeUpdateReport`. `find_device()` reads report IDs from each hidraw node's `report_descriptor` (`parse_lamparray_report_ids`).
+- `SUPPORTED_DEVICES` (HID_ID → fallback report IDs, models, `rainbow_supported`, `required_modules`) holds verified devices; they win over unlisted LampArray devices, which are driven generically (`verified: False`, `lamp_id_end` from the attributes report). Verified devices keep their tested lamp range 0..0.
+- `hid_set_feature()` / `hid_get_feature()` issue `HIDIOCSFEATURE` / `HIDIOCGFEATURE` ioctls; `set_color()` / `set_firmware_mode()` build the reports.
 - OEM rainbow goes through a different path: asus-nb-wmi debugfs (`/sys/kernel/debug/asus-nb-wmi`), hence requires root.
 - `cmd_*` functions are the public API used by both `main()` and the Suite (signature pattern `cmd_x(cfg, devinfo, ...)`). `main()` is guarded by `__name__ == "__main__"`; entry point is `run()`.
 - Config: `~/.config/vrgb/config.json`. `get_real_home()` honours `SUDO_USER`/`PKEXEC_UID` so elevated runs use the invoking user's config. `save_config` preserves unknown keys (the Suite stores its own keys in the same file — see `sun.DEFAULTS`).
