@@ -230,8 +230,11 @@ duplicated device code. Original GUI by Matt Warner
 
 **Running it on every desktop**
 
+- Started from a terminal, `vrgb-gui` moves itself to the background and gives the
+  shell back; closing the window leaves it running in the tray.
+  `vrgb-gui --foreground` keeps it attached to the terminal (Ctrl+C stops it).
 - Only one copy runs: starting `vrgb-gui` again opens the window of the running
-  one; `vrgb-gui --quit` stops it.
+  one; `vrgb-gui --quit` or the tray menu's Quit stops it.
 - `vrgb-gui --tray` keeps running in the background even without a system tray
   (e.g. sway without a bar), so the automation still works.
 - Login autostart: "Start VRGB in the tray at login" writes an XDG autostart entry

@@ -2,6 +2,8 @@
 
 import math
 import os
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -911,7 +913,27 @@ def claim_single_instance(background):
     return inst
 
 
+def detach_from_terminal():
+    """Started from a terminal: relaunch in the background and give the shell back.
+
+    Desktop launchers and systemd start the GUI without a terminal and are left
+    alone (a detached child would make the systemd unit exit). `--foreground`
+    keeps it attached, for debugging.
+    """
+    if "--foreground" in sys.argv or "--quit" in sys.argv or not sys.stdin.isatty():
+        return False
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
+    subprocess.Popen(
+        [sys.executable, "-m", "vrgb_suite", "--foreground", *sys.argv[1:]],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True, env=env,
+    )
+    return True
+
+
 def main():
+    if detach_from_terminal():
+        return 0
     app = QApplication(sys.argv)
     app.setApplicationName("vrgb-gui")
     app.setApplicationDisplayName("VRGB")
@@ -964,6 +986,15 @@ def main():
 
     if not background:
         window.show()
+
+    # Ctrl+C / SIGTERM quit cleanly. Python only runs signal handlers between
+    # bytecodes, which never happens while Qt's event loop blocks in C++, so a
+    # short timer hands control back to the interpreter.
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: app.quit())
+    wake = QTimer()
+    wake.timeout.connect(lambda: None)
+    wake.start(250)
 
     rc = app.exec()
     worker.stop()
