@@ -366,11 +366,12 @@ def test_ctrl_c_stops_cycle_for_good(sent, config_dir, monkeypatch, capsys):
     assert "cycle" not in vrgb.load_config()
 
 
-def test_oem_rainbow_without_root_asks_for_sudo(monkeypatch, capsys):
+def test_oem_rainbow_without_root_asks_for_sudo_before_touching_device(sent, monkeypatch, capsys):
     monkeypatch.setattr(vrgb.os, "geteuid", lambda: 1000)
     with pytest.raises(SystemExit):
-        vrgb.asus_wmi_rainbow(True)
+        vrgb.cmd_rainbow(vrgb.default_config(), devinfo("0018:00000B05:000019B6"), "on")
     assert "sudo" in capsys.readouterr().err
+    assert sent == []
 
 
 def fake_systemctl(monkeypatch, enabled):
@@ -409,3 +410,15 @@ def test_rainbow_without_argument_is_cycle_100_4(sent, config_dir, monkeypatch, 
     run_cycle_until(monkeypatch, stop, start=vrgb.main)
     assert seen["percent"] == 100
     assert (seen["cycle"]["period"], seen["cycle"]["fps"]) == (4.0, 20.0)
+
+
+@pytest.mark.parametrize("argv,warns", [(["rainbow-oem", "off"], False), (["rainbow", "off"], True)])
+def test_oem_rainbow_command_and_deprecated_alias(monkeypatch, capsys, argv, warns):
+    seen = []
+    monkeypatch.setattr(vrgb, "find_device", lambda: "dev")
+    monkeypatch.setattr(vrgb, "cmd_rainbow", lambda cfg, dev, state: seen.append(state))
+    monkeypatch.setattr(vrgb, "load_config", vrgb.default_config)
+    monkeypatch.setattr(vrgb.sys, "argv", ["vrgb", *argv])
+    vrgb.main()
+    assert seen == ["off"]
+    assert ("deprecated" in capsys.readouterr().err) is warns

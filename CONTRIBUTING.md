@@ -56,4 +56,4 @@ VRGB already drives any HID LampArray keyboard it finds, reading the report IDs 
 
 ## Reporting hardware results
 
-Open an issue with your laptop model, the `HID_ID` and `HID_NAME` lines above, the output of `vrgb --debug status`, and which commands worked (static color, brightness, `auto`, `rainbow`).
+Open an issue with your laptop model, the `HID_ID` and `HID_NAME` lines above, the output of `vrgb --debug status`, and which commands worked (static color, brightness, `auto`, `rainbow`, `rainbow-oem`).

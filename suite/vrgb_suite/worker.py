@@ -181,6 +181,7 @@ class DeviceWorker(QThread):
             self._emit_cfg(cfg)
             self.op_done.emit("rainbow", True, "Rainbow " + ("on" if on else "off"))
         except PermissionError:
+            # The deprecated spelling: the root-owned system CLI may predate rainbow-oem.
             self._run_cli(["rainbow", "on" if on else "off"])
             self._emit_cfg(self._cfg())
             self.op_done.emit("rainbow", True, "Rainbow " + ("on" if on else "off") + " (pkexec)")
