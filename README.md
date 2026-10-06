@@ -45,7 +45,6 @@ ITE5570 (HID_ID: 0018:00000B05:00005570)
 - confirmed on S16 M5606K, S16 M5606WA, and S14 M5406WA  
 - firmware: 0x46  
 - color: 0x45  
-- note: OEM rainbow mode may not function on all models  
 
 <br>
 
@@ -76,12 +75,12 @@ Current Stable Release: see [Releases](https://github.com/vrgb-dev/vrgb/releases
 
 ## Features
 
+-   Rainbow mode with adjustable speed and brightness, resumed after logout and reboot
 -   Static RGB color control
--   Software rainbow cycling with adjustable speed (works on all supported devices, no OEM firmware support required)
 -   Fine brightness scaling (0–100%)
 -   Custom profiles
 -   Firmware autonomous mode toggle
--   OEM rainbow toggle (sudo required, model-dependent)
+-   OEM firmware rainbow (deprecated; sudo required, model-dependent)
 -   Debug diagnostics
 -   Required module checks for affected devices
 -   Persistent configuration
@@ -107,7 +106,6 @@ The firmware and color report IDs are the standard HID LampArray `LampArrayContr
 - firmware report: `0x0B`  
 - color report: `0x05`
 - required module: `asus-nb-wmi`
-- OEM rainbow: supported on validated S5406SA hardware, but may vary by model/firmware
 
 **ITE5570 (HID_ID: 0018:00000B05:00005570)**  
 - confirmed on:
@@ -116,7 +114,6 @@ The firmware and color report IDs are the standard HID LampArray `LampArrayContr
   - ASUS Vivobook S14 (M5406WA)
 - firmware report: `0x46`  
 - color report: `0x45`  
-- OEM rainbow: not supported / not exposed in current community reports
 
 ### Example device identifiers
 
@@ -133,7 +130,7 @@ VRGB scans available `hidraw` devices and selects compatible ASUS keyboard contr
 
 Multiple ASUS laptops appear to share the same ITE5570 controller and HID LampArray protocol. If your system exposes a similar device, there is a strong chance VRGB will work.
 
-Support expands through **verified device mappings** as new hardware is tested: a verified mapping adds known models, required kernel modules and OEM rainbow support, which a descriptor cannot describe. Stability and correctness are prioritized over broad but unreliable compatibility.
+Support expands through **verified device mappings** as new hardware is tested: a verified mapping adds known models and required kernel modules, which a descriptor cannot describe. Stability and correctness are prioritized over broad but unreliable compatibility.
 
 ### Required modules
 
@@ -148,12 +145,6 @@ Example manual load:
 Example load at boot:
 
     echo asus-nb-wmi | sudo tee /etc/modules-load.d/asus-nb-wmi.conf
-
-### OEM rainbow mode
-
-Static RGB control uses the HID path and is the core of VRGB.
-
-OEM rainbow mode uses a separate ASUS WMI path and is model-dependent. On some supported devices, the WMI debug interface may exist but expose no usable lighting device. In those cases, static RGB control should still work normally.
 
 If VRGB works (or does not work) on your system, please submit a compatibility report including:
 
@@ -179,6 +170,11 @@ Clone the repository and run the installer. It asks whether to install
 The udev rule gives the logged-in user access to the keyboard right away
 (`uaccess`); membership in the `vrgb` group applies after the next login.
 
+Then pick a color, or start the rainbow:
+
+    vrgb set 00aaff 70
+    vrgb rainbow
+
 
 **Note:**
 Keyboard color persists on reboot, but may reset to firmware default after a full power cycle.
@@ -203,8 +199,7 @@ duplicated device code. Original GUI by Matt Warner
   follows the firmware level (via the kernel's `brightness_hw_changed` notification,
   polling only while the window is open) so the hardware keys move the slider too.
   Falls back to pure-HID brightness if the LED node / logind is unavailable.
-- A power on/off toggle, firmware/autonomous mode toggle, OEM rainbow toggle
-  (auto-disabled on device mappings that do not support it)
+- A power on/off toggle and firmware/autonomous mode toggle
 - Profile manager (save / load / delete)
 - System-tray applet: on/off, a Brightness submenu, a Color submenu (preset
   swatches + a "More colors…" dialog), and profile loading; closing the window
@@ -271,6 +266,29 @@ Set RGB Color
 Change Brightness
 
     vrgb brightness 80
+
+Rainbow
+
+    vrgb rainbow
+
+Full brightness, one full color spectrum every 4 seconds: a shortcut for
+`vrgb cycle 100 4`. For other settings:
+
+    vrgb cycle [percent] [period_seconds] [fps]
+
+*Example (half brightness, a slower 10-second spectrum):*
+
+    vrgb cycle 50 10
+
+The rainbow is saved as the current mode, so `vrgb restore` (and the autostart
+restore options below) resume it after a logout or reboot. When the systemd
+restore service is enabled, `vrgb rainbow` and `vrgb cycle` hand it to the
+service and return immediately; otherwise they run in the foreground.
+
+While it runs, other commands take over cleanly: `set`, `auto` or loading a
+profile stop the rainbow and replace it, `brightness` changes its brightness, and
+`off` pauses it until the next `restore`. Pressing Ctrl+C stops it and it is not
+resumed at the next login.
     
 Save Profile (Current State)
 
@@ -296,7 +314,7 @@ Restore Saved State
 
     vrgb restore
 
-If the saved mode is the software rainbow cycle, `restore` resumes it and keeps
+If the saved mode is the rainbow, `restore` resumes it and keeps
 running until another command takes over.
 
 Enable firmware lighting (Firmware Autonomous Mode)
@@ -307,38 +325,6 @@ Return control to VRGB:
 
     vrgb auto off
 
-OEM Rainbow Mode (requires sudo)
-
-    sudo vrgb rainbow-oem on
-    sudo vrgb rainbow-oem off
-
-The older spelling `vrgb rainbow on|off` still works but is deprecated.
-
-Software Rainbow (no sudo, works on all supported devices)
-
-    vrgb rainbow
-
-This is the software rainbow at full brightness, one full color spectrum every
-4 seconds: a shortcut for `vrgb cycle 100 4`. For other settings:
-
-    vrgb cycle [percent] [period_seconds] [fps]
-
-*Example (full brightness, one full color spectrum every 4 seconds):*
-
-    vrgb cycle 100 4
-
-Unlike `rainbow-oem`, this does not depend on firmware support and gives
-full control over speed and brightness. It is saved as the current mode, so
-`vrgb restore` (and the autostart restore options below) resume it after a logout
-or reboot. When the systemd restore service is enabled, `vrgb rainbow` and
-`vrgb cycle` hand the cycle to it and return immediately; otherwise they run in
-the foreground.
-
-While it runs, other commands take over cleanly: `set`, `auto`, `rainbow-oem` or
-loading a profile stop the cycle and replace it, `brightness` changes the cycle's
-brightness, and `off` pauses it until the next `restore`. Pressing Ctrl+C stops it
-and it is not resumed at the next login.
-
 Debug Mode
 
     vrgb --debug status
@@ -346,6 +332,16 @@ Debug Mode
 About
 
     vrgb about
+
+Deprecated: OEM Firmware Rainbow (requires sudo, model-dependent)
+
+    sudo vrgb rainbow-oem on
+    sudo vrgb rainbow-oem off
+
+Switches the keyboard to its built-in firmware animation through the ASUS WMI
+debug interface. It only works on some models and offers no speed or color
+control; prefer `vrgb rainbow`. The older spelling `vrgb rainbow on|off` is an
+alias.
 
 
 ## Using vrgb as a library
@@ -450,7 +446,7 @@ Contents of `systemd/vrgb-restore.service`:
 
 The unit runs `vrgb restore` at the start of your graphical session, so it will
 apply from your next login onward. A static restore exits right away; a saved
-rainbow cycle keeps the service running for the session.
+rainbow keeps the service running for the session.
 
 You can install both the KDE and systemd autostart options at once if you
 like; they do the same thing and won't conflict (if both resume a cycle, the
