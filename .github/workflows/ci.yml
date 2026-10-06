@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.8", "3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install pytest
+      - run: pytest -q
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compile all Python sources
+        run: python3 -m compileall -q vrgb.py suite tests
+      - name: Core and Suite versions match
+        run: |
+          core=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' vrgb.py)
+          suite=$(sed -n 's/^__version__ = "\([^"]*\)".*/\1/p' suite/vrgb_suite/__init__.py)
+          echo "core=$core suite=$suite"
+          test "$core" = "$suite"
+      - name: shellcheck
+        run: shellcheck -S warning install.sh uninstall.sh
