@@ -1,11 +1,15 @@
 <p align="center">
   <img src="assets/vrgblogodark.png" width="500" alt="VRGB">
+  <br>
+  <img src="assets/core-suite.png" width="210" alt="VRGB Core | Suite">
   <br><br>
   <strong>Native RGB control for ASUS Vivobook keyboards on Linux</strong>
   <br>
   Lightweight HID LampArray control with a CLI, optional desktop Suite, profiles, automation, and effects.
   <br><br>
   <a href="https://github.com/vrgb-dev/vrgb/actions/workflows/ci.yml"><img src="https://github.com/vrgb-dev/vrgb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://aur.archlinux.org/packages/vrgb-gui"><img src="https://img.shields.io/badge/AUR-Available-1793D1?logo=archlinux&logoColor=white&style=flat" alt="Arch Linux AUR"></a>
+  <a href="https://copr.fedorainfracloud.org/coprs/vrgb-dev/vrgb/"><img src="https://img.shields.io/badge/COPR-Available-294172?logo=fedora&logoColor=white&style=flat" alt="Fedora COPR"></a>
   <a href="https://discord.gg/VHtsKyX7VV"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white&style=flat" alt="Discord"></a>
 </p>
 
@@ -151,6 +155,38 @@ Compatibility reports: [Issue
 
 ## Quick Install
 
+VRGB is available through the **Arch User Repository (AUR)** and **Fedora COPR**.
+Choose **Core** for the lightweight CLI, or **Suite** for the GUI, tray, and
+integration features. Installing Suite also installs Core.
+
+### Arch Linux (AUR)
+
+Install [VRGB Core](https://aur.archlinux.org/packages/vrgb) or
+[VRGB Suite](https://aur.archlinux.org/packages/vrgb-gui) using an AUR helper
+such as `paru`:
+
+```bash
+paru -S vrgb       # Core (CLI only)
+paru -S vrgb-gui   # Suite (includes Core)
+```
+
+### Fedora (COPR)
+
+Enable the [VRGB COPR repository](https://copr.fedorainfracloud.org/coprs/vrgb-dev/vrgb/):
+
+```bash
+sudo dnf copr enable vrgb-dev/vrgb
+```
+
+Then install either package:
+
+```bash
+sudo dnf install vrgb       # Core (CLI only)
+sudo dnf install vrgb-gui   # Suite (includes Core)
+```
+
+### Manual installation (other distributions)
+
 Clone the repository and run the installer as your normal user:
 
 ``` bash
@@ -286,9 +322,10 @@ vrgb about
 
 ## VRGB Suite
 
-Install the Suite with:
+Install the Suite using the AUR or COPR instructions above, or use the
+repository installer on other distributions:
 
-``` bash
+```bash
 ./install.sh suite
 ```
 
@@ -396,13 +433,23 @@ For deeper diagnostics and implementation details, see
 
 ## Uninstall
 
-From the repository:
+If installed through AUR or COPR, remove VRGB using your package manager:
+
+```bash
+# Arch Linux (AUR)
+sudo pacman -Rns vrgb-gui vrgb
+
+# Fedora (COPR)
+sudo dnf remove vrgb-gui vrgb
+```
+
+For a manual installation, run the uninstaller from the repository:
 
 ``` bash
 ./uninstall.sh
 ```
 
-Run the uninstaller as your normal user, not with `sudo`. It removes
+Run the manual uninstaller as your normal user, not with `sudo`. It removes
 VRGB's installed Core/Suite files, device-access rule, desktop
 integration, and VRGB-created startup entries.
 
