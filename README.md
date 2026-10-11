@@ -1,7 +1,5 @@
 <p align="center">
   <img src="assets/vrgblogodark.png" width="500" alt="VRGB">
-  <br>
-  <img src="assets/core-suite.png" width="210" alt="VRGB Core | Suite">
   <br><br>
   <strong>Native RGB control for ASUS Vivobook keyboards on Linux</strong>
   <br>
